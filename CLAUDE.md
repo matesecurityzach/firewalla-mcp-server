@@ -12,6 +12,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Never invent endpoints. Patterns like `/stats/simple`, `/trends/flows`, `/stats/topDevicesByBandwidth` do not exist on the MSP API and must not be added.
 - For bandwidth/trends, query `/flows` or `/alarms` with `groupBy` / `sortBy` and aggregate client-side.
 
+## Primary Audience
+
+The downstream consumer of this server is an **AI security-investigation agent**, not a human operator. Several design choices follow from that:
+
+- Tool descriptions in `src/server.ts` must use the **verified Firewalla MSP qualifier names** (`box.id`, `device.id`, `remote.region`, `transfer.total`, etc.) — not invented fields like `gid:` or `bytes:`. The agent grounds queries on whatever the description says; if the description lies, queries silently return empty results.
+- Investigation composite tools (`investigate_ip`, `investigate_device`, `get_alarm_context`, `get_target_timeline`) exist because chaining 4–5 `search_*` calls per question is unreliable for agents. Reach for these first; only fall back to direct searches when correlation isn't enough.
+- Reference resources at `firewalla://reference/*` are the agent's ground truth (alarm-types, categories, query-syntax). Update them in lockstep with `docs/firewalla-api-reference.md`.
+- The agent-facing playbook is `docs/agent-investigation-guide.md`. Read it after the API reference whenever you change the tool surface.
+
 ## Architecture
 
 ### Tool Registry Pattern (the real shape)
@@ -58,7 +67,15 @@ interface StandardError {
 `createErrorResponse(name, message, ErrorType, details)` from `validation/error-handler.ts` is the canonical way to fail a tool.
 
 ### Search subsystem
-`src/search/` hosts the query parser and filter engine that powers `search_flows`, `search_alarms`, `search_rules`, plus the client-side `search_devices` / `search_target_lists`. Supports `AND`/`OR`/`NOT`, wildcards (`*`), ranges (`[a TO b]`), comparisons (`>=`), and geographic filters (`region:US`). See `docs/query-syntax-guide.md` for the full grammar.
+
+`src/search/` hosts the **local** query parser and filter engine that powers `search_flows`, `search_alarms`, `search_rules`. The local grammar is permissive (`AND`/`OR`/`NOT`, parentheses, ranges, comparisons, wildcards). What actually reaches the MSP API depends on the route:
+
+- Search tools (`search_*`) translate locally then forward to `firewalla.getFlowData` / `getActiveAlarms` / etc., which pass the resulting query string straight to `/v2/{resource}`.
+- Direct tools (`get_active_alarms`, `get_flow_data`, `get_network_rules`) pass the user-supplied `query` argument **straight through** with no translation — only verified MSP qualifiers will match server-side.
+
+Tool descriptions in `src/server.ts` document the **verified MSP qualifier set** for both paths. The local parser will accept richer syntax (e.g. `severity:high` on alarms, computed locally) — but document only the verified set so the agent doesn't build queries that silently fail.
+
+See `firewalla://reference/query-syntax` (resource) and `docs/query-syntax-guide.md` for the full local grammar; `docs/firewalla-api-reference.md` for the verified MSP qualifier tables.
 
 ### Transports
 The server speaks both stdio (default — for Claude Desktop / Claude Code) and Streamable HTTP (for Docker / orchestrators). Selection happens via `MCP_TRANSPORT` and is parsed in `src/utils/env.ts → parseTransportConfig()`.
@@ -107,6 +124,9 @@ npm test -- tests/path/to/file.test.ts
 
 # Single test name
 npm test -- -t "name fragment"
+
+# Just the new agent-first surface
+npm test -- tests/tools/handlers/investigation.test.ts tests/tools/handlers/reports.test.ts tests/tools/registry-schema-parity.test.ts
 ```
 
 > Note: `package.json` defines `test:regression*` scripts, but `tests/regression/` does not exist in the working tree. Those scripts will pass-with-no-tests today. Don't add `--passWithNoTests`-less invocations until that suite is restored.
@@ -130,12 +150,14 @@ npm run ci:full            # ci:quick + test:ci
 ## Adding a Tool — Checklist
 
 1. Add a handler class in the appropriate `src/tools/handlers/<category>.ts`, extending the base in `handlers/base.ts`. Implement `execute(args, firewalla)` and set `name` + `category`.
+   - **1a.** If the handler's `category` is a new value, update **both** the `ToolHandler` interface union and the `BaseToolHandler.category` abstract union in `src/tools/handlers/base.ts`. The TypeScript compiler will only flag the mismatch when a concrete handler tries to use the new category.
 2. Register the handler in `src/tools/registry.ts → registerHandlers()`.
 3. Add the input schema entry to the `tools: [...]` array in `src/server.ts` under `ListToolsRequestSchema`.
 4. Wire any new API call through `src/firewalla/client.ts` — never call axios directly from a handler.
 5. Validate inputs via `src/validation/` helpers; return errors with `createErrorResponse`.
 6. Add tests under `tests/tools/` (unit) and/or `tests/integration/` (against mocked or recorded responses via `nock`).
 7. Verify endpoint + parameter names against `docs/firewalla-api-reference.md` before writing the client call.
+8. Run `npm test -- tests/tools/registry-schema-parity.test.ts` — it enforces that every registered handler has a matching `ListTools` schema and the active tool count matches the expected value. Update the expected count there too.
 
 ## Caching and Rate Limiting
 
@@ -176,3 +198,10 @@ Other DEBUG namespaces referenced in docs (`firewalla:*`, `cache`, `performance`
 - Node 18+ required.
 - No `console.log` in production code paths — use `src/monitoring/logger.ts`. Stderr writes (e.g., `registry.ts:221`) bypass the lint rule deliberately.
 - Tests use ts-jest ESM preset; `tsconfig.test.json` relaxes `noUnusedLocals` and strict initialization for fixtures.
+
+## Commit conventions
+
+- Conventional Commits style (`feat:`, `fix:`, `chore:`, `refactor:`, `docs:`, `style:`, `security:`).
+- Commits are GPG-signed and signed-off (`git commit -s`). The `commit.gpgsign` setting is required in the local git config.
+- Detailed bodies preferred over one-line subjects when the change spans multiple concerns; see commits `2a750a9` and `e2876d6` for the established shape.
+- No `Co-Authored-By` lines for AI tools. Don't add them.
