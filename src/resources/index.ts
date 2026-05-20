@@ -21,9 +21,88 @@
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { FirewallaClient } from '../firewalla/client.js';
 import { safeUnixToISOString } from '../utils/timestamp.js';
+import { ALARM_TYPES, CONTENT_CATEGORIES, QUERY_SYNTAX } from './reference.js';
+
+/**
+ * Catalog of resources exposed to MCP clients.
+ *
+ * The same list is returned by the ListResources handler and used internally
+ * to keep documentation, tests, and dispatcher logic in sync.
+ */
+export const RESOURCE_CATALOG: ReadonlyArray<{
+  uri: string;
+  name: string;
+  description: string;
+  mimeType: string;
+}> = [
+  {
+    uri: 'firewalla://summary',
+    name: 'Firewall summary',
+    description:
+      'Live firewall health and performance metrics derived from /v2/boxes + recent flows.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://devices',
+    name: 'Device inventory',
+    description:
+      'Full device inventory with online/offline status and metadata.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://metrics/security',
+    name: 'Security metrics',
+    description:
+      'Aggregated alarm counts, blocked connections, and a derived threat level.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://topology',
+    name: 'Network topology',
+    description: 'Network structure derived from device + flow data.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://threats/recent',
+    name: 'Recent threats (24h)',
+    description: 'Recent alarms + blocked flows in the past 24 hours.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://boxes',
+    name: 'Box inventory',
+    description:
+      'Live list of all accessible Firewalla boxes (GID, model, version, online state, counts).',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://reference/alarm-types',
+    name: 'Alarm type reference',
+    description:
+      'Verified alarm type id->name table (1-16) including which types carry a remote-host block.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://reference/categories',
+    name: 'Content category reference',
+    description:
+      'Enumeration of remote-host content categories used by flows, alarms, target lists, and rules.',
+    mimeType: 'application/json',
+  },
+  {
+    uri: 'firewalla://reference/query-syntax',
+    name: 'Query grammar reference',
+    description:
+      'Search grammar (literal, numeric, wildcard, quoted, exclusion, AND/OR/NOT) and per-resource qualifier tables.',
+    mimeType: 'application/json',
+  },
+];
 
 /**
  * Registers MCP resource handlers on the server to provide structured Firewalla firewall data via URI-based endpoints
@@ -54,6 +133,15 @@ export function setupResources(
   server: Server,
   firewalla: FirewallaClient
 ): void {
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: RESOURCE_CATALOG.map(({ uri, name, description, mimeType }) => ({
+      uri,
+      name,
+      description,
+      mimeType,
+    })),
+  }));
+
   server.setRequestHandler(ReadResourceRequestSchema, async request => {
     const { uri } = request.params;
 
@@ -301,6 +389,92 @@ export function setupResources(
             ],
           };
         }
+
+        case 'firewalla://boxes': {
+          const boxes = await firewalla.getBoxes();
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'application/json',
+                text: JSON.stringify(
+                  {
+                    boxes: (boxes.results || []).map(box => ({
+                      gid: box.gid,
+                      name: box.name,
+                      model: box.model,
+                      mode: box.mode,
+                      version: box.version,
+                      online: box.online,
+                      last_seen: safeUnixToISOString(box.lastSeen, 'Never'),
+                      location: box.location,
+                      public_ip: box.publicIP,
+                      group: box.group,
+                      device_count: box.deviceCount,
+                      rule_count: box.ruleCount,
+                      alarm_count: box.alarmCount,
+                    })),
+                    total: boxes.count,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+
+        case 'firewalla://reference/alarm-types':
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'application/json',
+                text: JSON.stringify(
+                  {
+                    alarm_types: ALARM_TYPES,
+                    notes: [
+                      'The `remote` flag indicates whether alarms of this type carry a remote-host block (per docs/firewalla-api-reference.md).',
+                      'Use type:N or AlarmType:"<name>" in search queries.',
+                    ],
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+
+        case 'firewalla://reference/categories':
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'application/json',
+                text: JSON.stringify(
+                  {
+                    categories: CONTENT_CATEGORIES,
+                    notes: [
+                      'Used as remote.category on alarms, category on flows and rules, and category on target lists.',
+                    ],
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+
+        case 'firewalla://reference/query-syntax':
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'application/json',
+                text: JSON.stringify(QUERY_SYNTAX, null, 2),
+              },
+            ],
+          };
 
         default:
           throw new Error(`Unknown resource URI: ${uri}`);

@@ -3,21 +3,30 @@
 /**
  * @fileoverview Firewalla MCP Server
  *
- * This file implements the primary MCP server class that provides Claude with access to
- * Firewalla firewall data through 28 tools that map to Firewalla API endpoints.
- * Tools include parameter validation and error handling.
+ * This file implements the primary MCP server class that provides MCP clients
+ * (including AI security-investigation agents) with access to Firewalla data
+ * through 37 tools, 9 resources, and 5 prompts.
  *
- * Architecture:
- * - 23 Direct API Endpoints
- * - 5 Convenience Wrappers
- * - Limits set to API maximum (500)
- * - Required parameters for proper API calls
- * - CRUD operations for all resources
+ * Tool layout:
+ * - 23 direct API tools (alarms, flows, devices, rules, target lists, analytics)
+ * - 5 convenience wrappers (bandwidth, offline devices, search wrappers, rule summary)
+ * - 4 investigation composite tools (investigate_ip, investigate_device,
+ *   get_alarm_context, get_target_timeline)
+ * - 5 report composite tools (generate_security_report, generate_threat_analysis,
+ *   generate_bandwidth_analysis_report, generate_device_investigation_report,
+ *   generate_network_health_report)
+ *
+ * Resources include live data (summary, devices, metrics/security, topology,
+ * threats/recent, boxes) and static reference (alarm-types, categories,
+ * query-syntax).
+ *
+ * Architecture features:
+ * - Limits aligned to API maximum (500)
+ * - Required parameters for direct API calls
+ * - CRUD operations for target lists
  * - Dual transport support (stdio and HTTP)
  *
  * @version 1.2.0
- * @author Alex Mittell <mittell@me.com> (https://github.com/amittell)
- * @since 2025-06-21
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -96,14 +105,14 @@ export class FirewallaMCPServer {
           {
             name: 'get_active_alarms',
             description:
-              'Retrieve current security alerts and alarms from Firewalla firewall',
+              'Retrieve current security alerts and alarms. Investigation use: starting point for "what is firing right now?" - returns full alarm objects including device and remote-host context. For correlation across an IP or device, prefer investigate_ip or get_alarm_context. Browse firewalla://reference/alarm-types for the full type id->name table.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query for filtering alarms (default: status:1 for active). Use type:N where N is: 1=Security Activity, 2=Abnormal Upload, 3=Large Bandwidth Usage, 4=Monthly Data Plan, 5=New Device, 6=Device Back Online, 7=Device Offline, 8=Video Activity, 9=Gaming Activity, 10=Porn Activity, 11=VPN Activity, 12=VPN Connection Restored, 13=VPN Connection Error, 14=Open Port, 15=Internet Connectivity Update, 16=Large Upload. Examples: type:8 (video), type:10 (porn), region:US, source_ip:*',
+                    'Firewalla MSP query. Verified qualifiers: type:1-16 (or AlarmType:"Security Activity"), status:active|archived, ts:>UNIX|<UNIX|RANGE, box.id:UUID, box.name:"My Firewalla", device.id:"mac:AA:BB:CC:DD:EE:FF", device.name:*iphone*, device.network.name:Guest, remote.domain:*.facebook.com, remote.region:US, remote.category:porn|games|social|..., transfer.total:>50MB, transfer.download:>10MB, transfer.upload:>10MB. Combine terms with spaces (implicit-AND grammar). Use - prefix to exclude (e.g. -status:archived). Examples: "type:1 status:active", "remote.region:CN type:1", "device.name:*laptop* transfer.total:>100MB".',
                 },
                 groupBy: {
                   type: 'string',
@@ -162,14 +171,15 @@ export class FirewallaMCPServer {
           // },
           {
             name: 'get_flow_data',
-            description: 'Query network traffic flows from Firewalla firewall',
+            description:
+              'Query raw network traffic flow records (bidirectional connections between devices and remote hosts). Investigation use: direct passthrough to /v2/flows when you already know the filter shape. For an IP-centric or device-centric correlation across alarms + rules + flows in one call, prefer investigate_ip or investigate_device.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query for flows. Supports region:US for geographic filtering, protocol:tcp, blocked:true, domain:*, category:social, etc.',
+                    'Firewalla MSP query. Verified qualifiers: ts:>UNIX|<UNIX|RANGE, direction:inbound|outbound|local, protocol:tcp|udp, status:ok, box.id:UUID, box.name:..., device.id:"mac:AA:BB:CC:DD:EE:FF", device.name:*phone*, network.name:Guest, domain:*.example.com, region:US (ISO-3166), category:ad|edu|games|gamble|intel|p2p|porn|private|social|shopping|video|vpn, sport:53, dport:443, download:>10MB, upload:>10MB, total:>50MB. Combine terms with spaces (implicit-AND grammar); list multiple values for one qualifier using commas (e.g. category:porn,gamble). Use - prefix to exclude. Examples: "region:CN direction:outbound", "category:porn,gamble -status:ok", "device.name:*laptop* total:>100MB".',
                 },
                 groupBy: {
                   type: 'string',
@@ -199,7 +209,7 @@ export class FirewallaMCPServer {
           {
             name: 'get_device_status',
             description:
-              'Check online/offline status of devices on Firewalla network',
+              'List devices on the network with current online/offline status, IP, MAC vendor, network, group, and bytes counters. Investigation use: device inventory pull. For "what has device X been doing?" prefer investigate_device.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -434,14 +444,14 @@ export class FirewallaMCPServer {
           {
             name: 'search_flows',
             description:
-              'Search network flows with advanced query filters. Use this for: historical analysis, specific time ranges, complex filtering, or when you need more than 50 flows. Supports pagination, time-based queries (e.g., "ts:>1h" for last hour), and all flow fields including geographic filtering. For quick "what\'s happening now" snapshots, use get_recent_flow_activity instead.',
+              'Search network flows with advanced query filters, pagination, time-windowing, and geographic filters. Investigation use: historical traffic analysis, complex filtering, anything beyond the 50-flow snapshot from get_recent_flow_activity. For correlation across an IP/device in one payload, prefer investigate_ip / investigate_device.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query using Firewalla syntax. Supported fields: protocol:tcp/udp, direction:inbound/outbound/local, blocked:true/false, bytes:>1MB, domain:*.example.com, region:US (country code), category:social/games/porn/etc, gid:box_id, device.ip:192.168.*, source_ip:*, destination_ip:*. Examples: "region:US AND protocol:tcp", "blocked:true AND bytes:>1MB", "category:social OR category:games"',
+                    'Firewalla MSP flow query. Verified qualifiers: ts:>UNIX|<UNIX|RANGE, direction:inbound|outbound|local, protocol:tcp|udp, status:ok, box.id:UUID, box.name:..., device.id:"mac:AA:BB:CC:DD:EE:FF", device.name:*phone*, network.name:..., domain:*.example.com, region:US, category:ad|edu|games|gamble|intel|p2p|porn|private|social|shopping|video|vpn, sport:53, dport:443, download:>10MB, upload:>10MB, total:>50MB. Combine terms with spaces (implicit-AND grammar); list multiple values for one qualifier using commas (e.g. category:porn,gamble). Use - prefix to exclude. Examples: "region:CN direction:outbound total:>1MB", "category:porn,gamble", "-status:ok device.name:*server*". For grammar reference, read resource firewalla://reference/query-syntax.',
                 },
                 groupBy: {
                   type: 'string',
@@ -471,14 +481,14 @@ export class FirewallaMCPServer {
           {
             name: 'search_alarms',
             description:
-              'Search alarms using full-text or field filters. Alarm types: 1=Security Activity, 2=Abnormal Upload, 3=Large Bandwidth Usage, 4=Monthly Data Plan, 5=New Device, 6=Device Back Online, 7=Device Offline, 8=Video Activity, 9=Gaming Activity, 10=Porn Activity, 11=VPN Activity, 12=VPN Connection Restored, 13=VPN Connection Error, 14=Open Port, 15=Internet Connectivity Update, 16=Large Upload.',
+              'Search alarms by field filters with pagination and grouping. Alarm types (also see resource firewalla://reference/alarm-types): 1=Security Activity, 2=Abnormal Upload, 3=Large Bandwidth Usage, 4=Monthly Data Plan, 5=New Device, 6=Device Back Online, 7=Device Offline, 8=Video Activity, 9=Gaming Activity, 10=Porn Activity, 11=VPN Activity, 12=VPN Connection Restored, 13=VPN Connection Error, 14=Open Port, 15=Internet Connectivity Update, 16=Large Upload. Investigation use: hunt across alarms by attribute. For one-alarm-plus-related-alarms, prefer get_alarm_context.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query using Firewalla syntax. Supported fields: type:1-16 (see alarm types above), resolved:true/false, status:1/2 (active/archived), source_ip:192.168.*, region:US (country code), gid:box_id, device.name:*, message:"text search". Examples: "type:8 AND region:US" (video from US), "type:10 AND status:1" (active porn alerts), "source_ip:192.168.* AND NOT resolved:true"',
+                    'Firewalla MSP alarm query. Verified qualifiers: ts:>UNIX|<UNIX|RANGE, type:1-16 (or AlarmType:"Security Activity,Abnormal Upload"), status:active|archived, box.id:UUID, box.name:..., box.group.id:GROUPID, device.id:"mac:AA:BB:CC:DD:EE:FF", device.name:*iphone*, device.network.name:Guest, remote.category:porn|games|social|..., remote.domain:*.facebook.com, remote.region:US, transfer.download:>10MB, transfer.upload:>10MB, transfer.total:>50MB. Combine terms with spaces (implicit-AND grammar); list multiple values for one qualifier using commas (e.g. type:1,2). Use - prefix to exclude (e.g. -status:archived). Examples: "type:1 remote.region:CN", "type:10 status:active", "device.name:*kids* remote.category:gamble", "type:1 -remote.region:US".',
                 },
                 groupBy: {
                   type: 'string',
@@ -508,14 +518,14 @@ export class FirewallaMCPServer {
           {
             name: 'search_rules',
             description:
-              'Search firewall rules by target, action or status. Supports all rule fields.',
+              'Search firewall rules by target, action, status, or scope. Investigation use: find which rules already cover (or accidentally allow) a target before recommending changes.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query using Firewalla syntax. Supported fields: action:allow/block/timelimit, target.type:domain/ip/device, target.value:*.facebook.com, status:active/paused, direction:bidirection/inbound/outbound, protocol:tcp/udp, gid:box_id, scope.type:device/network, notes:"description text". Examples: "action:block AND target.value:*.social.com", "status:paused", "target.type:domain AND action:block"',
+                    'Firewalla MSP rule query. Verified qualifiers: status:active|paused, action:allow|block|timelimit, box.id:UUID, box.group.id:GROUPID, device.id:"mac:AA:BB:CC:DD:EE:FF". Also commonly accepted: target.type:domain|ip|category|country|app, target.value:*.facebook.com, direction:bidirection|inbound|outbound, protocol:tcp|udp, scope.type:device|network|tag, notes:"text". Combine with spaces (implicit-AND grammar). Use - prefix to exclude. Examples: "action:block target.value:*.facebook.com", "status:paused", "target.type:category target.value:gamble", "action:block -status:paused".',
                 },
               },
               required: [],
@@ -743,14 +753,14 @@ export class FirewallaMCPServer {
           {
             name: 'search_devices',
             description:
-              'Search devices by name, IP, MAC or status (convenience wrapper with client-side filtering)',
+              'Search devices with client-side filtering on the device inventory. Investigation use: locate a device by IP/MAC/name or list all offline-Apple devices, etc. For "tell me everything that happened with this device" prefer investigate_device.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
                   type: 'string',
                   description:
-                    'Search query using Firewalla syntax. Supported fields: mac:AA:BB:CC:DD:EE:FF, ip:192.168.1.*, name:*iPhone*, online:true/false, vendor:Apple, gid:box_id, network.name:*, group.name:*. Examples: "online:false AND vendor:Apple", "ip:192.168.1.* AND name:*laptop*", "mac:AA:* OR name:*phone*"',
+                    'Client-side device query. Supported fields: id (full device id including mac: prefix), name:*iPhone*, ip:192.168.1.*, mac:AA:BB:* (matches the device id portion after the mac: prefix), online:true|false, mac_vendor:Apple (alias: vendor), last_seen, total_download, total_upload, network.name:..., group.name:.... Combine with spaces (implicit-AND grammar). Examples: "online:false mac_vendor:Apple", "ip:192.168.1.* name:*laptop*", "online:true group.name:*kids*", "online:true -mac_vendor:Apple".',
                 },
                 status: {
                   type: 'string',
@@ -783,7 +793,7 @@ export class FirewallaMCPServer {
                 query: {
                   type: 'string',
                   description:
-                    'Search query for target lists. Supported fields: name:*Social*, owner:global/box_gid, category:social/games/ad/porn/etc, targets:*.facebook.com, notes:"description text". Examples: "category:social", "owner:global AND name:*Block*", "targets:*.gaming.com"',
+                    'Client-side target-list query. Supported fields: name:*Social*, owner:global|<box_gid>, category:social|games|ad|porn|... (see firewalla://reference/categories), targets:*.facebook.com, notes:"description text". Combine with spaces (implicit-AND grammar). Examples: "category:social", "owner:global name:*Block*", "targets:*.gaming.com", "category:social -owner:global".',
                 },
                 category: {
                   type: 'string',
@@ -825,6 +835,200 @@ export class FirewallaMCPServer {
               required: [],
             },
           },
+          // Investigation composite tools (4 tools) - one-call correlation
+          // primitives designed for AI security investigation agents.
+          {
+            name: 'investigate_ip',
+            description:
+              'Investigation primitive: correlate everything touching a single IP. Returns the matching device record (if any), all flows where the IP is source/destination/device-IP, all alarms where device or remote IP matches, and any firewall rules whose target or scope references the IP - in one structured payload. Prefer this over chaining search_flows + search_alarms + search_rules + search_devices manually.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                ip: {
+                  type: 'string',
+                  description:
+                    'IPv4 or IPv6 address to investigate (required).',
+                },
+                lookback_hours: {
+                  type: 'number',
+                  description:
+                    'Lookback window in hours (default: 24, max: 720).',
+                  minimum: 1,
+                  maximum: 720,
+                  default: 24,
+                },
+              },
+              required: ['ip'],
+            },
+          },
+          {
+            name: 'investigate_device',
+            description:
+              'Investigation primitive: one-call dossier for a device. Resolves the device by full id ("mac:AA:BB:CC:DD:EE:FF"), bare MAC, or current IP and returns the device record, alarms touching it, recent flows, a bandwidth + peer + region + category summary, and firewall rules scoped to it.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                device: {
+                  type: 'string',
+                  description:
+                    'Device identifier (required). Accepts full id ("mac:AA:BB:CC:DD:EE:FF" / "wg_peer:..." / "ovpn:..."), bare MAC, or the device current IP.',
+                },
+                lookback_hours: {
+                  type: 'number',
+                  description:
+                    'Lookback window in hours (default: 24, max: 720).',
+                  minimum: 1,
+                  maximum: 720,
+                  default: 24,
+                },
+              },
+              required: ['device'],
+            },
+          },
+          {
+            name: 'get_alarm_context',
+            description:
+              'Investigation primitive: fetch an alarm and group related alarms by same device, same remote IP, same remote domain, and same alarm type within a +/- time window. Useful for "is this a one-off or part of a wave?".',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                alarm_id: {
+                  type: 'string',
+                  description: 'Alarm id (aid) to anchor on (required).',
+                },
+                box: {
+                  type: 'string',
+                  description:
+                    'Box GID (optional; defaults to FIREWALLA_BOX_ID).',
+                },
+                window_seconds: {
+                  type: 'number',
+                  description:
+                    'Half-width of the time window in seconds (default: 21600 = 6 hours; max: 604800 = 7 days).',
+                  minimum: 60,
+                  maximum: 604800,
+                  default: 21600,
+                },
+              },
+              required: ['alarm_id'],
+            },
+          },
+          {
+            name: 'get_target_timeline',
+            description:
+              'Investigation primitive: build a chronological timeline of events for a target (IPv4/IPv6, domain, or device id). Each entry has a `kind` discriminator ("alarm" | "flow" | "rule"). Use for narrative reconstruction across signal types.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                target: {
+                  type: 'string',
+                  description:
+                    'Target identifier (required). IPv4/IPv6 address, domain (e.g. example.com), or device id (mac:AA:BB:...).',
+                },
+                lookback_hours: {
+                  type: 'number',
+                  description:
+                    'Lookback window in hours (default: 24, max: 720).',
+                  minimum: 1,
+                  maximum: 720,
+                  default: 24,
+                },
+              },
+              required: ['target'],
+            },
+          },
+          // Report composite tools (5 tools) - agent-callable equivalents of
+          // the corresponding MCP prompts. Each returns { data, narrative }.
+          {
+            name: 'generate_security_report',
+            description:
+              'Compose a structured Firewalla security report (status + metrics + active alarms + recent threats). Returns { data, narrative } where narrative matches the security_report prompt output.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                period: {
+                  type: 'string',
+                  enum: ['24h', '7d', '30d'],
+                  description: 'Lookback period (default: 24h).',
+                  default: '24h',
+                },
+              },
+              required: [],
+            },
+          },
+          {
+            name: 'generate_threat_analysis',
+            description:
+              'Run a threat-pattern analysis (alarms + threats + rule status). Returns { data, narrative }.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                severity_threshold: {
+                  type: 'string',
+                  enum: ['low', 'medium', 'high', 'critical'],
+                  description: 'Minimum severity to include (default: medium).',
+                  default: 'medium',
+                },
+              },
+              required: [],
+            },
+          },
+          {
+            name: 'generate_bandwidth_analysis_report',
+            description:
+              'Compose a bandwidth-analysis report. Returns { data, narrative }. Requires period.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                period: {
+                  type: 'string',
+                  enum: ['1h', '24h', '7d', '30d'],
+                  description: 'Time period (required).',
+                },
+                threshold_mb: {
+                  type: 'number',
+                  description:
+                    'Bandwidth threshold in MB (default: 100). Devices above this counted as "heavy".',
+                  minimum: 1,
+                  default: 100,
+                },
+              },
+              required: ['period'],
+            },
+          },
+          {
+            name: 'generate_device_investigation_report',
+            description:
+              'Compose a device-investigation report. Returns { data, narrative }. For raw correlation without the narrative, use investigate_device.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                device_id: {
+                  type: 'string',
+                  description:
+                    'Device id (required). E.g. "mac:AA:BB:CC:DD:EE:FF".',
+                },
+                lookback_hours: {
+                  type: 'number',
+                  description: 'Lookback window in hours (default: 24).',
+                  minimum: 1,
+                  maximum: 720,
+                  default: 24,
+                },
+              },
+              required: ['device_id'],
+            },
+          },
+          {
+            name: 'generate_network_health_report',
+            description:
+              'Compose a holistic network-health report. Returns { data, narrative } including performance, security, and overall health scores.',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+              required: [],
+            },
+          },
         ],
       };
     });
@@ -861,7 +1065,7 @@ export class FirewallaMCPServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     logger.info(
-      'Firewalla MCP Server running with 28 tools on stdio transport'
+      'Firewalla MCP Server running with 37 tools on stdio transport'
     );
   }
 
@@ -1046,7 +1250,7 @@ export class FirewallaMCPServer {
 
       httpServer.listen(port, () => {
         logger.info(
-          `Firewalla MCP Server running with 28 tools on HTTP transport`
+          `Firewalla MCP Server running with 37 tools on HTTP transport`
         );
         logger.info(`HTTP server listening on http://localhost:${port}${path}`);
         resolve();

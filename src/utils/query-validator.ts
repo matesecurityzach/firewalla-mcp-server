@@ -279,41 +279,46 @@ export function validateFirewallaQuerySyntax(query: string): ValidationResult {
 }
 
 /**
- * Get example queries for a specific entity type
+ * Get example queries for a specific entity type.
+ *
+ * Examples use the verified Firewalla MSP qualifier names where possible
+ * (see docs/firewalla-api-reference.md, "Search Qualifiers" section). Multiple
+ * values for one qualifier use comma lists (e.g. category:social,games).
  */
 export function getExampleQueries(entityType: string): string[] {
   const examples: Record<string, string[]> = {
     flows: [
-      'protocol:tcp AND blocked:true',
-      'region:US AND bytes:>1000000',
+      'protocol:tcp direction:outbound',
+      'region:US total:>1MB',
       'domain:*.facebook.com',
-      'category:social OR category:games',
-      'source_ip:192.168.1.* AND direction:outbound',
+      'category:social,games',
+      'device.name:*laptop* direction:outbound',
+      '-status:ok category:porn',
     ],
     alarms: [
-      'severity:high AND status:1',
-      'region:CN AND type:1',
-      'source_ip:192.168.* AND NOT resolved:true',
-      'message:"suspicious activity"',
-      'device.name:*laptop* AND severity:>=medium',
+      'type:1 status:active',
+      'remote.region:CN type:1',
+      'device.name:*laptop* -status:archived',
+      'remote.category:porn,gamble',
+      'transfer.total:>100MB type:2,3',
     ],
     rules: [
-      'action:block AND target.value:*.social.com',
+      'action:block target.value:*.social.com',
       'status:paused',
-      'target.type:domain AND action:block',
-      'scope.type:device AND protocol:tcp',
+      'target.type:domain action:block',
+      'scope.type:device protocol:tcp',
       'notes:"temporary rule"',
     ],
     devices: [
-      'online:false AND vendor:Apple',
-      'ip:192.168.1.* AND name:*phone*',
+      'online:false mac_vendor:Apple',
+      'ip:192.168.1.* name:*phone*',
       'mac:AA:BB:*',
       'network.name:"Guest Network"',
-      'online:true AND group.name:*kids*',
+      'online:true group.name:*kids*',
     ],
     target_lists: [
       'category:social',
-      'owner:global AND name:*Block*',
+      'owner:global name:*Block*',
       'targets:*.gaming.com',
       'notes:"custom blocklist"',
     ],

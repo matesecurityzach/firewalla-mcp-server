@@ -1,34 +1,40 @@
 /**
  * @fileoverview Tool Registry
  *
- * Implements a registry pattern for managing 28 MCP tool handlers with clean
- * organization and easy discovery. Each tool maps to Firewalla API endpoints
- * with parameter validation.
+ * Registry of all MCP tool handlers exposed by the Firewalla MCP server.
  *
- * Registry Features:
- * - **Automatic Registration**: All 28 handlers are auto-registered during construction
- * - **API Mapping**: Direct mapping to verified Firewalla API endpoints
- * - **Type Safety**: Full TypeScript support with proper handler interfaces
- * - **Easy Discovery**: Methods to find tools by name, category, or list all tools
- * - **Proper Schemas**: All limits set to API maximum (500), required parameters added
- * - **CRUD Operations**: Create, Read, Update, Delete operations for all resources
+ * Tool distribution (37 total):
  *
- * 27-Tool Distribution:
- * - Direct API Endpoints (22 tools):
- *   * Security: 2 handlers (get_active_alarms, get_specific_alarm)
- *   * Network: 1 handler (get_flow_data)
- *   * Device: 1 handler (get_device_status)
- *   * Rules: 8 handlers (get_network_rules, pause_rule, resume_rule, get_target_lists,
- *     get_specific_target_list, create_target_list, update_target_list, delete_target_list)
- *   * Search: 3 handlers (search_flows, search_alarms, search_rules)
- *   * Analytics: 7 handlers (get_boxes, get_simple_statistics, get_statistics_by_region,
- *     get_statistics_by_box, get_flow_trends, get_alarm_trends, get_rule_trends)
- * - Convenience Wrappers (5 tools):
- *   * get_bandwidth_usage, get_offline_devices, search_devices, search_target_lists, get_network_rules_summary
+ * Direct API tools (15):
+ *   - Security (2): get_active_alarms, get_specific_alarm.
+ *     Note: delete_alarm is implemented (DeleteAlarmHandler in handlers/security.ts)
+ *     but intentionally NOT registered because the MSP API returns success
+ *     without actually deleting.
+ *   - Network (1): get_flow_data
+ *   - Device (1): get_device_status
+ *   - Rules (8): get_network_rules, pause_rule, resume_rule, get_target_lists,
+ *     get_specific_target_list, create_target_list, update_target_list,
+ *     delete_target_list
+ *   - Search (3): search_flows, search_alarms, search_rules
  *
- * @version 1.0.0
- * @author Alex Mittell <mittell@me.com> (https://github.com/amittell)
- * @since 2025-06-21
+ * Analytics (8): get_boxes, get_simple_statistics, get_statistics_by_region,
+ *   get_statistics_by_box, get_recent_flow_activity, get_flow_insights,
+ *   get_alarm_trends, get_rule_trends.
+ *
+ * Convenience wrappers (5): get_bandwidth_usage, get_offline_devices,
+ *   search_devices, search_target_lists, get_network_rules_summary.
+ *
+ * Investigation composite tools (4): investigate_ip, investigate_device,
+ *   get_alarm_context, get_target_timeline.
+ *
+ * Report composite tools (5): generate_security_report,
+ *   generate_threat_analysis, generate_bandwidth_analysis_report,
+ *   generate_device_investigation_report, generate_network_health_report.
+ *
+ * Adding a new tool requires three coordinated edits: (1) implement the
+ * handler in src/tools/handlers/<category>.ts; (2) register it here; (3) add
+ * its schema to the ListTools block in src/server.ts. The agent investigation
+ * guide and README should be updated when the public surface changes.
  */
 
 import type { ToolHandler } from './handlers/base.js';
@@ -71,20 +77,26 @@ import {
   SearchDevicesHandler,
   SearchTargetListsHandler,
 } from './handlers/search.js';
+import {
+  InvestigateIpHandler,
+  InvestigateDeviceHandler,
+  GetAlarmContextHandler,
+  GetTargetTimelineHandler,
+} from './handlers/investigation.js';
+import {
+  GenerateSecurityReportHandler,
+  GenerateThreatAnalysisHandler,
+  GenerateBandwidthAnalysisHandler,
+  GenerateDeviceInvestigationReportHandler,
+  GenerateNetworkHealthReportHandler,
+} from './handlers/reports.js';
 
 /**
- * Central registry for managing 27 MCP tool handlers with complete API coverage
+ * Central registry for managing all MCP tool handlers.
  *
- * Provides a clean, organized approach to tool registration and discovery for
- * the 27-tool architecture. Each tool handler maps to actual Firewalla API endpoints
- * with corrected schemas and proper parameter validation for API coverage.
- *
- * The registry pattern enables:
- * - 27 complete tools (22 direct API + 5 convenience wrappers)
- * - Comprehensive Firewalla API coverage including CRUD operations
- * - Clean separation between tool implementation and registration
- * - Type-safe tool discovery and execution
- * - API-verified tool schemas with corrected limits and required parameters
+ * Registers the full 37-tool surface (23 direct API + 5 convenience wrappers
+ * + 4 investigation composite tools + 5 report composite tools) and exposes
+ * lookup helpers by name and by category.
  *
  * @example
  * ```typescript
@@ -94,9 +106,9 @@ import {
  * const alarmHandler = registry.getHandler('get_active_alarms');
  *
  * // Get tools by category
- * const searchTools = registry.getToolsByCategory('search');
+ * const investigationTools = registry.getToolsByCategory('investigation');
  *
- * // List all available tools (returns 28 tools)
+ * // List every registered tool
  * const allTools = registry.getToolNames();
  * ```
  *
@@ -117,18 +129,13 @@ export class ToolRegistry {
   }
 
   /**
-   * Automatically registers 28 tool handlers for complete API coverage
-   *
-   * Registers handlers for the 28-tool architecture: 23 direct API endpoints
-   * and 5 convenience wrappers. Each handler implements the ToolHandler interface
-   * and maps to actual Firewalla API endpoints.
+   * Registers all 37 tool handlers (23 direct API + 5 convenience wrappers
+   * + 4 investigation composite + 5 report composite). See the file-level
+   * JSDoc above for the full tool list.
    *
    * @private
-   * @returns {void}
    */
   private registerHandlers(): void {
-    // Direct API Endpoints (23 handlers)
-
     // Security tools (2 handlers - delete_alarm disabled)
     this.register(new GetActiveAlarmsHandler());
     this.register(new GetSpecificAlarmHandler());
@@ -152,12 +159,12 @@ export class ToolRegistry {
     this.register(new UpdateTargetListHandler());
     this.register(new DeleteTargetListHandler());
 
-    // Search tools (5 handlers)
+    // Search tools (3 handlers)
     this.register(new SearchFlowsHandler());
     this.register(new SearchAlarmsHandler());
     this.register(new SearchRulesHandler());
 
-    // Analytics tools (6 handlers)
+    // Analytics tools (8 handlers)
     this.register(new GetBoxesHandler());
     this.register(new GetSimpleStatisticsHandler());
     this.register(new GetStatisticsByRegionHandler());
@@ -173,6 +180,21 @@ export class ToolRegistry {
     this.register(new SearchDevicesHandler()); // wrapper with client-side filtering
     this.register(new SearchTargetListsHandler()); // wrapper with client-side filtering
     this.register(new GetNetworkRulesSummaryHandler()); // wrapper around get_network_rules
+
+    // Investigation composite tools (4 handlers) - fan out to multiple client
+    // calls and return a single correlated payload. Designed for AI agents.
+    this.register(new InvestigateIpHandler());
+    this.register(new InvestigateDeviceHandler());
+    this.register(new GetAlarmContextHandler());
+    this.register(new GetTargetTimelineHandler());
+
+    // Report composite tools (5 handlers) - agent-callable equivalents of the
+    // MCP prompts. Return { data, narrative }.
+    this.register(new GenerateSecurityReportHandler());
+    this.register(new GenerateThreatAnalysisHandler());
+    this.register(new GenerateBandwidthAnalysisHandler());
+    this.register(new GenerateDeviceInvestigationReportHandler());
+    this.register(new GenerateNetworkHealthReportHandler());
   }
 
   /**

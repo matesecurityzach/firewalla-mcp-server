@@ -225,7 +225,14 @@ export interface ToolHandler {
   description: string;
 
   /** @description Tool category for organizational and filtering purposes */
-  category: 'security' | 'network' | 'device' | 'rule' | 'analytics' | 'search';
+  category:
+    | 'security'
+    | 'network'
+    | 'device'
+    | 'rule'
+    | 'analytics'
+    | 'search'
+    | 'investigation';
 }
 
 /**
@@ -278,7 +285,8 @@ export abstract class BaseToolHandler implements ToolHandler {
     | 'device'
     | 'rule'
     | 'analytics'
-    | 'search';
+    | 'search'
+    | 'investigation';
 
   /** @description Configuration options for this handler */
   protected options: BaseToolOptions;

@@ -1402,18 +1402,18 @@ export class QuerySanitizer {
               `Examples for ${entityType}:`,
               ...(entityType === 'flows' ? [
                 '  • "protocol:tcp" - search for TCP flows',
-                '  • "blocked:true" - search for blocked traffic', 
-                '  • "source_ip:192.168.*" - search specific IP range',
-                '  • "bytes:>1000000" - search for large transfers'
+                '  • "direction:outbound" - search outbound traffic',
+                '  • "device.name:*laptop*" - search by device name',
+                '  • "total:>1MB" - search for large transfers (verified API qualifier)'
               ] : entityType === 'alarms' ? [
-                '  • "severity:high" - search for high severity alarms',
-                '  • "type:intrusion" - search for intrusion alarms',
-                '  • "resolved:false" - search for unresolved alarms',
-                '  • "source_ip:192.168.*" - search by source IP'
+                '  • "type:1 status:active" - active Security Activity alarms',
+                '  • "remote.region:CN" - alarms involving China',
+                '  • "device.name:*phone*" - alarms touching a named device',
+                '  • "transfer.total:>50MB" - alarms with large data transfer'
               ] : entityType === 'rules' ? [
                 '  • "action:block" - search for blocking rules',
-                '  • "target_value:*.facebook.com" - search social media rules',
-                '  • "enabled:true" - search for active rules',
+                '  • "target.value:*.facebook.com" - search social media rules',
+                '  • "status:active" - search for active rules',
                 '  • "direction:outbound" - search outbound rules'
               ] : entityType === 'devices' ? [
                 '  • "online:true" - search for online devices',

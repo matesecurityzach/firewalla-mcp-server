@@ -1,29 +1,20 @@
 /**
  * @fileoverview MCP Tool Setup and Registry Management
  *
- * Implements a clean, modular registry pattern for managing 35 distinct MCP tools
- * that provide comprehensive Firewalla firewall management capabilities. Replaces
- * the original 1000+ line switch statement with maintainable, testable handler classes.
+ * Wires the ToolRegistry into the MCP server. The registry holds 37 tools
+ * across the categories below; the full per-tool list lives in
+ * `src/tools/registry.ts`.
  *
- * Tool Categories:
- * - **Security (3 tools)**: Alarm management and threat monitoring
- * - **Network (3 tools)**: Flow analysis and bandwidth monitoring
- * - **Device (1 tool)**: Device status and inventory management
- * - **Rule (7 tools)**: Firewall rule configuration and analytics
- * - **Analytics (7 tools)**: Statistical analysis and trend reporting
- * - **Search (11 tools)**: Advanced search with cross-reference capabilities
- * - **Bulk Operations (3 tools)**: Alarm and rule bulk management
- *
- * Architecture Benefits:
- * - Single Responsibility Principle for each tool handler
- * - Improved testability with isolated handler units
- * - Enhanced maintainability through registry pattern
- * - Centralized error handling and validation
- * - Comprehensive logging and monitoring integration
- *
- * @version 1.0.0
- * @author Alex Mittell <mittell@me.com> (https://github.com/amittell)
- * @since 2025-06-21
+ * Categories:
+ * - security (2): alarm retrieval (get_active_alarms, get_specific_alarm)
+ * - network (3): flow data + bandwidth + offline-device wrappers
+ * - device (1): get_device_status
+ * - rule (9): rule + target-list CRUD + rules summary wrapper
+ * - analytics (13): box/region stats, flow insights, trends, plus the 5
+ *   report composite tools (generate_*)
+ * - search (5): search_flows/alarms/rules/devices/target_lists
+ * - investigation (4): investigate_ip, investigate_device,
+ *   get_alarm_context, get_target_timeline
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -39,7 +30,7 @@ import { metrics } from '../monitoring/metrics.js';
 /**
  * Registers and configures all Firewalla MCP tools on the server using a modular registry pattern
  *
- * Sets up the complete toolkit of 35 distinct firewall management tools, each encapsulated
+ * Sets up the complete toolkit of 37 firewall + investigation tools, each encapsulated
  * in its own handler class and organized by functional category. The registry pattern provides
  * clean separation of concerns and enables easy testing and maintenance.
  *
@@ -67,7 +58,7 @@ import { metrics } from '../monitoring/metrics.js';
  * @public
  */
 export function setupTools(server: Server, firewalla: FirewallaClient): void {
-  // Initialize the tool registry with all 35 handlers
+  // Initialize the tool registry with all 37 handlers
   const toolRegistry = new ToolRegistry();
 
   // Set up the main request handler using the registry
@@ -134,32 +125,6 @@ export function setupTools(server: Server, firewalla: FirewallaClient): void {
 }
 
 /**
- * Migration Complete!
- *
- * ✅ Migrated to Registry (35 handlers total):
- *
- * Security (3):
- * - get_active_alarms, get_specific_alarm, delete_alarm
- *
- * Network (3):
- * - get_flow_data, get_bandwidth_usage, get_offline_devices
- *
- * Device (1):
- * - get_device_status
- *
- * Rule (6):
- * - get_network_rules, pause_rule, resume_rule, get_target_lists,
- *   get_network_rules_summary, get_most_active_rules, get_recent_rules
- *
- * Analytics (6):
- * - get_boxes, get_simple_statistics, get_statistics_by_region,
- *   get_statistics_by_box, get_flow_trends, get_alarm_trends, get_rule_trends
- *
- * Search (6):
- * - search_flows, search_alarms, search_rules, search_devices,
- *   search_target_lists, search_cross_reference
- *
- * 🗑️ Removed: 1000+ line switch statement replaced with clean registry pattern
- * 🔧 Fixed: Null safety issues in device mapping (lines 1263-1270 in original)
- * 📊 Architecture: Single Responsibility Principle, better testability, maintainability
+ * Tool registry overview (37 tools across 7 categories).
+ * See src/tools/registry.ts for the canonical, up-to-date list.
  */

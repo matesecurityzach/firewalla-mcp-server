@@ -4,394 +4,175 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CRITICAL: Before Any API Development
 
-**READ FIRST**: `/docs/firewalla-api-reference.md` - Complete Firewalla API specification
+**READ FIRST**: `docs/firewalla-api-reference.md` — the verified Firewalla MSP API v2 specification. It is the single source of truth for endpoints, data models, and query syntax.
 
-**Key Rules**:
-- ONLY use endpoints documented in `/docs/firewalla-api-reference.md`
-- NEVER assume endpoints exist without verification
-- ALWAYS use box-specific routing: `/v2/boxes/{box_gid}/{resource}`
-- NEVER use fictional endpoints like `/stats/simple` or `/trends/flows`
-- ALWAYS implement client-side aggregation for bandwidth/trends
+**Hard rules**:
+- Only call endpoints documented in `docs/firewalla-api-reference.md`.
+- Always use box-scoped routes: `/v2/boxes/{box_gid}/{resource}`.
+- Never invent endpoints. Patterns like `/stats/simple`, `/trends/flows`, `/stats/topDevicesByBandwidth` do not exist on the MSP API and must not be added.
+- For bandwidth/trends, query `/flows` or `/alarms` with `groupBy` / `sortBy` and aggregate client-side.
 
-## Project Overview
+## Architecture
 
-A Model Context Protocol (MCP) server that provides Claude with access to Firewalla firewall data. Features a **28-tool architecture** with advanced search capabilities.
+### Tool Registry Pattern (the real shape)
+- `src/server.ts` — MCP server bootstrap. Declares the tool schemas in the `ListToolsRequestSchema` response and wires stdio + Streamable HTTP transports. **Schemas live inline here**, not in a `TOOL_SCHEMAS` constant.
+- `src/tools/index.ts` — `setupTools()` registers a single `CallToolRequestSchema` handler that delegates execution to the registry.
+- `src/tools/registry.ts` — `ToolRegistry` instantiates all handler classes in its constructor. Adding a tool means: (1) add a handler class, (2) register it here, (3) add its schema to the `ListToolsRequestSchema` block in `server.ts`.
+- `src/tools/handlers/*.ts` — one file per category (`security`, `network`, `device`, `rules`, `analytics`, `search`, `investigation`, `reports`). Each handler extends the base in `handlers/base.ts` and exposes `name`, `category`, and `execute(args, firewalla)`.
+- `src/firewalla/client.ts` — the single HTTP client wrapper around the MSP API (axios + axios-retry, with internal caching).
+- `src/reports/index.ts` — shared report builders consumed by both `src/prompts/` and the `generate_*` tools in `src/tools/handlers/reports.ts`.
 
-## Architecture Overview
+### What's actually registered (37 active tools)
 
-### 28-Tool Architecture
-- **23 Direct API Tools**: Mapping to Firewalla MSP API endpoints
-- **5 Convenience Wrapper Tools**: Client-side enhanced functionality for common operations
-- **CRUD Operations**: Create, Read, Update, Delete operations for all resources
+`DeleteAlarmHandler` exists in `handlers/security.ts` but is intentionally commented out in `registry.ts` because the MSP API returns `{success: true}` without actually deleting. So the imported handler count is 38, but **37 are live**.
 
-### Tool Categories (28 total)
-- **Security (2 tools)**: get_active_alarms, get_specific_alarm
-- **Network (1 tool)**: get_flow_data
-- **Device (1 tool)**: get_device_status
-- **Rules (8 tools)**: get_network_rules, pause_rule, resume_rule, get_target_lists, get_specific_target_list, create_target_list, update_target_list, delete_target_list
-- **Search (3 tools)**: search_flows, search_alarms, search_rules
-- **Analytics (8 tools)**: get_boxes, get_simple_statistics, get_statistics_by_region, get_statistics_by_box, get_flow_insights, get_flow_trends, get_alarm_trends, get_rule_trends
-- **Convenience Wrappers (5 tools)**: get_bandwidth_usage, get_offline_devices, search_devices, search_target_lists, get_network_rules_summary
+- **Security (2)**: `get_active_alarms`, `get_specific_alarm` *(delete_alarm disabled — see comment in `registry.ts`)*
+- **Network (1 direct + 2 wrappers)**: `get_flow_data`; wrappers `get_bandwidth_usage`, `get_offline_devices`
+- **Device (1)**: `get_device_status`
+- **Rules (8 direct + 1 wrapper)**: `get_network_rules`, `pause_rule`, `resume_rule`, `get_target_lists`, `get_specific_target_list`, `create_target_list`, `update_target_list`, `delete_target_list`; wrapper `get_network_rules_summary`
+- **Search (3 direct + 2 wrappers)**: `search_flows`, `search_alarms`, `search_rules`; wrappers `search_devices`, `search_target_lists` (client-side filtering)
+- **Analytics (8)**: `get_boxes`, `get_simple_statistics`, `get_statistics_by_region`, `get_statistics_by_box`, `get_recent_flow_activity`, `get_flow_insights`, `get_alarm_trends`, `get_rule_trends`
+- **Investigation composite (4)**: `investigate_ip`, `investigate_device`, `get_alarm_context`, `get_target_timeline` — fan out to multiple existing client calls and return correlated `{data, narrative?}` payloads. Designed for AI agents that would otherwise chain 4–5 calls per investigation step.
+- **Report composite (5)**: `generate_security_report`, `generate_threat_analysis`, `generate_bandwidth_analysis_report`, `generate_device_investigation_report`, `generate_network_health_report` — agent-callable equivalents of the MCP prompts. Each returns `{ data, narrative }` and reuses the builders in `src/reports/`.
 
-## Development Commands
+If you change which tools exist, also update the schema block in `server.ts`, the registry, the README "Quick Reference," and the JSDoc counts in `registry.ts` / `tools/index.ts` / `server.ts`.
 
-### Setup and Installation
+### Resources and prompts
+- `src/resources/` — MCP resources. Live data URIs: `firewalla://summary`, `firewalla://devices`, `firewalla://metrics/security`, `firewalla://topology`, `firewalla://threats/recent`, `firewalla://boxes`. Reference URIs: `firewalla://reference/alarm-types`, `firewalla://reference/categories`, `firewalla://reference/query-syntax`. Registered via `setupResources()` in `server.ts` with both `ListResources` and `ReadResource` handlers.
+- `src/prompts/` — MCP prompt templates. Registered via `setupPrompts()` with both `ListPrompts` and `GetPrompt` handlers. The actual report-building logic lives in `src/reports/`; the prompt handlers are thin wrappers that emit the `narrative` field as a user message.
+- `docs/agent-investigation-guide.md` — the agent-facing investigation playbook (which tool for which question, verified query grammar, pagination/error patterns). Update it when the tool surface changes.
+
+### Validation layer
+`src/validation/` contains the parameter validators, query parser, field mapper, and error formatter. The expected error shape across tools is:
+
+```ts
+interface StandardError {
+  error: true;
+  message: string;
+  tool: string;
+  details?: unknown;
+  validation_errors?: string[];
+}
+```
+
+`createErrorResponse(name, message, ErrorType, details)` from `validation/error-handler.ts` is the canonical way to fail a tool.
+
+### Search subsystem
+`src/search/` hosts the query parser and filter engine that powers `search_flows`, `search_alarms`, `search_rules`, plus the client-side `search_devices` / `search_target_lists`. Supports `AND`/`OR`/`NOT`, wildcards (`*`), ranges (`[a TO b]`), comparisons (`>=`), and geographic filters (`region:US`). See `docs/query-syntax-guide.md` for the full grammar.
+
+### Transports
+The server speaks both stdio (default — for Claude Desktop / Claude Code) and Streamable HTTP (for Docker / orchestrators). Selection happens via `MCP_TRANSPORT` and is parsed in `src/utils/env.ts → parseTransportConfig()`.
+
+## Configuration
+
+Required:
+- `FIREWALLA_MSP_TOKEN` — MSP API access token
+- `FIREWALLA_MSP_ID` — MSP domain (e.g., `yourdomain.firewalla.net`)
+
+Optional (see `src/config/config.ts` for the full list and bounds):
+- `FIREWALLA_BOX_ID` — restrict all calls to a single box GID. If unset, calls span all accessible boxes.
+- `FIREWALLA_DEFAULT_BOX_ID` — fallback box for convenience wrappers
+- `API_TIMEOUT` (ms, 1000–300000, default 30000)
+- `API_RATE_LIMIT` (req/min, 1–1000, default 100)
+- `CACHE_TTL` (s, 0–3600, default 300)
+- `DEFAULT_PAGE_SIZE` (default 100), `MAX_PAGE_SIZE` (default 10000)
+- `MCP_TRANSPORT` (`stdio` | `http`, default `stdio`)
+- `MCP_HTTP_PORT` (default 3000), `MCP_HTTP_PATH` (default `/mcp`)
+- `MCP_TEST_MODE=true` — start with dummy credentials (for Docker health checks)
+- `MCP_DISABLED_TOOLS` — referenced in error messages; **not currently wired into tool dispatch**. Do not rely on it without adding the check.
+
+## Common Commands
+
+### Build / run
 ```bash
 npm install
-npm run build
+npm run build              # tsc — runs prebuild → clean first
+npm run build:clean        # rimraf dist && build
+npm run dev                # build + node dist/server.js
+npm run mcp:start          # build + start (stdio by default)
+npm run mcp:debug          # DEBUG=mcp:* + build + start
 ```
 
-### Development
+### Test
 ```bash
-npm run dev              # Build and start development server
-npm run build            # Build TypeScript to JavaScript
-npm run build:clean      # Clean build directory and rebuild
-npm run start            # Start built server
-npm run mcp:start        # Build and start MCP server
-npm run mcp:test         # Test MCP server connection
-npm run mcp:debug        # Debug MCP server with logging
+npm test                            # full jest suite (NODE_ENV=test)
+npm run test:watch
+npm run test:ci                     # coverage, CI flag set
+npm run test:quick                  # fast subset: utils + validation, narrow worker pool
+npm run test:unit                   # --testPathPatterns=unit
+npm run test:integration            # --testPathPatterns=integration
+
+# Single file
+npm test -- tests/path/to/file.test.ts
+
+# Single test name
+npm test -- -t "name fragment"
 ```
 
-### Transport Configuration
-The server supports two transport modes:
+> Note: `package.json` defines `test:regression*` scripts, but `tests/regression/` does not exist in the working tree. Those scripts will pass-with-no-tests today. Don't add `--passWithNoTests`-less invocations until that suite is restored.
 
-**Stdio Transport (Default)**: Standard input/output for Claude Desktop and MCP clients
+### Lint / format / types
 ```bash
-MCP_TRANSPORT=stdio npm run mcp:start
+npm run lint               # eslint src/**/*.ts
+npm run lint:fix
+npm run lint:check         # zero warnings allowed (CI gate)
+npm run format             # prettier write
+npm run format:check
+npm run typecheck          # tsc --noEmit
 ```
 
-**HTTP Transport**: HTTP server for Docker containers and external access
+### CI gates
 ```bash
-MCP_TRANSPORT=http MCP_HTTP_PORT=3000 npm run mcp:start
-# Server will be accessible at http://localhost:3000/mcp
+npm run ci:quick           # format:check + typecheck + lint + build + test:quick
+npm run ci:full            # ci:quick + test:ci
 ```
 
-### Testing
-```bash
-npm run test             # Run all tests
-npm run test:watch       # Run tests in watch mode
-npm run test:ci          # Run tests with coverage for CI
-npm run test:quick       # Run fast unit tests only
-npm run test:unit        # Run unit tests only
-npm run test:integration # Run integration tests only
-npm run test:regression  # Run regression tests
-```
+## Adding a Tool — Checklist
 
-### Code Quality
-```bash
-npm run lint             # Run ESLint
-npm run lint:fix         # Fix ESLint issues automatically
-npm run lint:check       # Check linting with zero warnings
-npm run format           # Format code with Prettier
-npm run format:check     # Check code formatting
-npm run typecheck        # Type checking without emitting files
-npm run clean            # Clean all generated files
-```
+1. Add a handler class in the appropriate `src/tools/handlers/<category>.ts`, extending the base in `handlers/base.ts`. Implement `execute(args, firewalla)` and set `name` + `category`.
+2. Register the handler in `src/tools/registry.ts → registerHandlers()`.
+3. Add the input schema entry to the `tools: [...]` array in `src/server.ts` under `ListToolsRequestSchema`.
+4. Wire any new API call through `src/firewalla/client.ts` — never call axios directly from a handler.
+5. Validate inputs via `src/validation/` helpers; return errors with `createErrorResponse`.
+6. Add tests under `tests/tools/` (unit) and/or `tests/integration/` (against mocked or recorded responses via `nock`).
+7. Verify endpoint + parameter names against `docs/firewalla-api-reference.md` before writing the client call.
 
-### CI/CD Commands
-```bash
-npm run ci:quick         # Fast CI pipeline
-npm run ci:full          # Complete CI pipeline
-npm run setup:hooks      # Install git hooks
-```
+## Caching and Rate Limiting
 
-## API Credentials Setup
+- `FirewallaClient` caches responses with TTL set by `CACHE_TTL` (default 300s). LRU-style eviction; geographic enrichment uses its own longer-lived cache.
+- `axios-retry` handles transient failures with exponential backoff.
+- Respect the documented MSP limit (~100 req/min, see `SPEC.md`). The client throttles internally but unbounded fan-out from search aggregations can still trip it.
 
-### Firewalla MSP API Configuration
-1. Create `.env` file in project root
-2. Add the following environment variables:
-```env
-# Required
-FIREWALLA_MSP_TOKEN=your_msp_access_token_here
-FIREWALLA_MSP_ID=yourdomain.firewalla.net
+## Known Behaviors / Gotchas
 
-# Optional - can be retrieved via get_boxes tool
-# FIREWALLA_BOX_ID=your_box_gid_here
-
-# Optional - default box ID for convenience
-# FIREWALLA_DEFAULT_BOX_ID=your_default_box_gid_here
-```
-
-### Getting MSP Credentials
-1. Log into your Firewalla MSP portal at `https://yourdomain.firewalla.net`
-2. Navigate to Account Settings > API Settings
-3. Generate a personal access token
-4. Note your MSP domain (e.g., `yourdomain.firewalla.net`)
-
-### About Box IDs
-- **Box ID is now optional** - you can retrieve available boxes using the `get_boxes` tool
-- If no box ID is configured, API calls return data for all boxes you have access to
-- You can optionally set `FIREWALLA_BOX_ID` to filter all queries to a specific box by default
-- Use `FIREWALLA_DEFAULT_BOX_ID` for convenience tools that need a default box
-- Box GID format: UUID-like `1eb71e38-3a95-4371-8903-ace24c83ab49`
-
-## Feature Flag System
-
-The server uses a feature flag system for deployment control and safety:
-
-### Environment Variables
-```env
-# Core safety flags
-MCP_WAVE0_ENABLED=true                    # Master enable/disable (default: true)
-MCP_READ_ONLY_MODE=false                  # Read-only mode (default: false)
-
-# Individual tool control
-MCP_DISABLED_TOOLS=""                     # Comma-separated list of tools to disable
-
-# Performance flags
-MCP_CACHE_ENABLED=true                    # Enable caching (default: true)
-MCP_DEBUG_MODE=false                      # Debug logging (default: false)
-```
-
-### Tool Configuration
-- **WAVE0_ENABLED=false**: All 28 tools disabled (safe mode)
-- **WAVE0_ENABLED=true**: All 28 tools available
-- **MCP_DISABLED_TOOLS**: Selectively disable specific tools by name
-
-## Testing Procedures
-
-### Unit Tests
-- Test individual MCP tools and resources
-- Mock Firewalla API responses
-- Validate input/output schemas
-
-### Integration Tests
-- Test actual Firewalla API connections
-- Verify MCP protocol compliance
-- End-to-end workflow testing
-
-### Manual Testing with Claude
-1. Start MCP server: `npm run mcp:start`
-2. Connect Claude Desktop to server
-3. Test queries:
-   - "What security alerts do I have?"
-   - "Show me top bandwidth users"
-   - "What firewall rules are active?"
-   - "Has anyone accessed porn sites today?"
-   - "Show me social media usage analysis"
-
-## Search API
-
-### Core Search Tools (5 tools)
-- **search_flows**: Network flow searching with complex filters
-- **search_alarms**: Security alarm searching with type/time/IP filters
-- **search_rules**: Firewall rule searching with target/action/status filters
-- **search_devices**: Device searching with network/status/usage filters
-- **search_target_lists**: Target list searching with category/ownership filters
-
-### Search Query Syntax
-The server supports search queries using Firewalla API syntax:
-
-```text
-# Basic field queries
-type:8                        # Video Activity
-source_ip:192.168.1.1
-protocol:tcp
-
-# Logical operators
-type:1 AND source_ip:192.168.*     # Security alerts from local network
-action:block OR action:timelimit
-
-# Wildcards and patterns
-ip:192.168.*
-device_name:*laptop*
-target_value:*.facebook.com
-
-# Geographic filtering (flows and alarms)
-region:US                     # United States
-region:CN                     # China
-region:US AND protocol:tcp    # US TCP traffic
-
-# Ranges and comparisons
-bytes:[1000 TO 50000]
-type:>=8                      # Video activity and above
-timestamp:>=2024-01-01
-
-# Complex queries
-(type:8 OR type:9 OR type:10) AND source_ip:192.168.* NOT resolved:true
-```
-
-### Example Search Queries
-
-```bash
-# Find security activity alarms from specific IP range
-search_alarms query:"type:1 AND source_ip:192.168.*" limit:50
-
-# Find blocked flows over 1MB with geographic filtering
-search_flows query:"blocked:true AND bytes:>=1000000 AND region:CN" limit:100
-
-# Find all rules targeting social media
-search_rules query:"target_value:*facebook* OR target_value:*twitter*" limit:25
-
-# Find offline devices by vendor
-search_devices query:"online:false AND mac_vendor:Apple" limit:30
-
-# Geographic security analysis examples
-search_flows query:"region:US AND protocol:tcp AND category:social" limit:50
-search_alarms query:"region:CN AND type:1 AND status:1" limit:25
-```
-
-## Flow Insights Tool
-
-The `get_flow_insights` tool addresses the challenge of analyzing high-volume networks (100k+ flows/day) by using category-based aggregation instead of time-based pagination.
-
-### Why get_flow_insights?
-- **Scalability**: Handles 338k+ flows/day efficiently with 2-3 API calls instead of 1,690+ pagination requests
-- **Real Questions**: Answers "did anyone watch porn?" or "what social media was used?" directly
-- **Performance**: Uses groupBy aggregation at the API level instead of client-side processing
-- **Actionable Data**: Returns category breakdowns, top domains, and device-specific usage
-
-### Implementation Details
-- Uses Firewalla's category classification: porn, social, video, games, shopping, etc.
-- Aggregates data using API-level groupBy instead of fetching all flows
-- Returns both allowed and blocked traffic analysis
-- Provides device-level breakdowns for parental control use cases
-
-### Recent Flow Activity Tool
-- `get_recent_flow_activity` provides current network state snapshots (last 10-20 minutes)  
-- Returns up to 2000 flows across 4 API pages for immediate analysis
-- Use for current security assessment and real-time activity monitoring
-
-## API Reference Documentation
-
-**COMPREHENSIVE API REFERENCE**: `/docs/firewalla-api-reference.md`
-
-This file contains the complete, official Firewalla MSP API v2 documentation including:
-- All verified endpoint URLs and parameters
-- Complete data model definitions (TypeScript interfaces)
-- Search query syntax and examples
-- Response format specifications
-- Rate limiting and authentication details
-- Practical code examples (Node.js/Axios and cURL)
-- Error handling patterns
-
-**ALWAYS reference this file before:**
-- Adding new API endpoints
-- Modifying existing API calls
-- Implementing new tools or features
-- Debugging API integration issues
-
-## Architecture Notes
-
-### Clean 28-Tool Design
-- **Direct Implementation**: All 28 tools defined directly in TOOL_SCHEMAS
-- **API Mapping**: Mapping to all Firewalla MSP API endpoints
-- **Type Safety**: Full TypeScript implementation with strict validation
-- **Registry Pattern**: Clean tool registration with handler-based architecture
-
-### Key Files
-- `src/server.ts`: Main MCP server with 28-tool TOOL_SCHEMAS architecture
-- `src/tools/registry.ts`: Tool registry with 28 handler definitions
-- `src/firewalla/client.ts`: Firewalla API client with caching
-- `src/validation/`: Parameter validation and error handling
-
-### Data Flow
-1. Claude sends MCP request
-2. Server validates tool availability via feature flags
-3. Server finds tool in TOOL_SCHEMAS
-4. Direct API execution with Firewalla client
-5. Response returned with enhanced error handling
-
-## Common Issues and Solutions
-
-### Authentication Errors
-- Verify MSP token is valid and not expired
-- Check Box ID is correct
-- Ensure network connectivity to MSP API
-- Reference authentication section in `/docs/firewalla-api-reference.md`
-
-### API Endpoint Issues
-- **FIRST**: Check `/docs/firewalla-api-reference.md` for correct endpoint URLs
-- Verify endpoint exists in official documentation
-- Check parameter names and types
-- Validate request format against documented examples
-
-### MCP Connection Issues
-- Confirm server is running on correct stdio transport
-- Check Claude Code MCP configuration
-- Verify no port conflicts
-
-### Feature Flag Issues
-- Check environment variables are set correctly
-- Verify tool is enabled via feature flags
-- Review disabled tools list
-- Check server logs for flag validation warnings
+- **`delete_alarm` is disabled** — see `registry.ts:135`. The MSP API returns `{success: true}` but the alarm persists. Do not re-enable without confirming with upstream.
+- **Empty `category` field on flows** is normal — Firewalla only classifies recognized domains/services.
+- **`get_recent_flow_activity`** caps at ~150 flows to stay within MCP token limits; use `search_flows` with time filters for larger ranges.
+- **`get_flow_insights`** uses API-side `groupBy` to handle high-volume networks (300k+ flows/day) without paginating — prefer it over `search_flows` for "did device X visit category Y?" questions.
+- **Box ID is optional**: if unset, calls return data across all accessible boxes via the MSP-level routes.
 
 ## Debugging
 
-### Debug Commands
 ```bash
-# Enable comprehensive debugging
-DEBUG=firewalla:* npm run mcp:start
-
-# Enable specific debugging namespaces
-DEBUG=cache,performance,api npm run mcp:start
-DEBUG=validation,error-handler npm run mcp:start
-
-# Debug with performance monitoring
-DEBUG=firewalla:* npm run dev
+DEBUG=mcp:* npm run mcp:start        # the wired-up namespace
 ```
 
-### Debug Categories
-- **cache**: Cache operations and performance
-- **performance**: Performance metrics and timing
-- **api**: API request/response cycles
-- **validation**: Input validation and errors
-- **error-handler**: Error processing and recovery
-- **firewalla**: All Firewalla-related debugging
+Other DEBUG namespaces referenced in docs (`firewalla:*`, `cache`, `performance`, etc.) are aspirational — verify in `src/monitoring/logger.ts` before depending on them.
 
-## Critical Development Guidelines
+## Reference Documentation (in repo)
 
-### Before Making Any API Changes:
-1. **READ** `/docs/firewalla-api-reference.md` first
-2. **VERIFY** the endpoint exists in official documentation
-3. **CHECK** parameter names and types against documented examples
-4. **TEST** with the provided code examples
-5. **NEVER** assume an endpoint exists without verification
+- `docs/firewalla-api-reference.md` — **authoritative MSP API spec**. Always consult before changing API code.
+- `docs/query-syntax-guide.md` — search grammar
+- `docs/field-mappings.md` — field aliases across entity types
+- `docs/error-handling-guide.md` — error categorization and recovery
+- `docs/geographic-data-handling-guide.md` — geo enrichment behavior
+- `docs/pagination-guide.md`, `docs/rate-limiting-guide.md`, `docs/limits-and-performance-guide.md`
+- `SPEC.md` — protocol-level specification
+- `USAGE.md`, `TROUBLESHOOTING.md` — end-user docs
 
-### When Adding New Tools:
-1. Reference the data models section for correct TypeScript interfaces
-2. Use the documented parameter formats and response structures
-3. Follow the authentication and error handling patterns
-4. Implement proper rate limiting as documented
-5. Add to TOOL_SCHEMAS in `src/server.ts`
-6. Add to appropriate category in `src/core/feature-flags.ts`
+## Project Conventions
 
-### Tool Architecture Requirements
-- All tools must be defined in TOOL_SCHEMAS with proper schema
-- Add to appropriate tool category in feature flags
-- Include proper input validation and error handling
-- Follow the 28-tool architecture constraints
-- Implement direct API execution in the server
-
-## Performance Considerations
-
-### Caching System
-- API Responses: 300s TTL (configurable via CACHE_TTL environment variable)
-- Geographic Data: 1h TTL with LRU eviction
-- Cache key collision prevention with enhanced hashing
-- Automatic cleanup of expired entries
-
-### Rate Limiting
-- Built-in protection against Firewalla API limits
-- Intelligent request throttling
-- Retry logic with exponential backoff
-
-### Monitoring
-```bash
-# Enable performance monitoring
-DEBUG=performance,metrics npm run dev
-
-# Track cache performance  
-DEBUG=cache npm run mcp:start
-```
-
-## Version Information
-
-- **Current Version**: 1.0.0
-- **Architecture**: 28-tool design (23 direct API + 5 convenience)
-- **API Support**: Firewalla MSP API v2 with CRUD operations
-- **Node.js**: Requires 18+
-- **TypeScript**: ES2020 target with strict mode
-
-**Remember**: The `/docs/firewalla-api-reference.md` file contains the complete, verified API specification. It is the single source of truth for all Firewalla API integration.
+- TypeScript strict mode with ES2020 target, ESM (`"type": "module"`). Imports use `.js` extensions (resolved by `moduleResolution: node` + Jest's `moduleNameMapper`).
+- Node 18+ required.
+- No `console.log` in production code paths — use `src/monitoring/logger.ts`. Stderr writes (e.g., `registry.ts:221`) bypass the lint rule deliberately.
+- Tests use ts-jest ESM preset; `tsconfig.test.json` relaxes `noUnusedLocals` and strict initialization for fixtures.

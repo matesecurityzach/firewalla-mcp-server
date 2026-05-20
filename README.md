@@ -5,15 +5,15 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@amittell/firewalla-mcp-server/badge" alt="Glama MCP Server" />
 </a>
 
-A Model Context Protocol (MCP) server that provides real-time access to Firewalla firewall data through 28 specialized tools, compatible with any MCP client.
+A Model Context Protocol (MCP) server that provides real-time access to Firewalla firewall data through 37 tools, designed for use by AI security-investigation agents and compatible with any MCP client.
 
 ## Why Firewalla MCP Server?
 
-### Simple Network Security Integration
-- **28 Tools** for network monitoring and analysis
-- **23 Direct API Endpoints** + **5 Convenience Wrappers**
-- **Advanced Search** with query syntax and filters
-- **Clean, Verified Architecture** with corrected API schemas
+### Built for AI security investigations
+- **37 tools**: 23 direct API endpoints, 5 convenience wrappers, **4 investigation composite tools** that correlate flows + alarms + rules + devices in one call, and **5 report composite tools** that return both structured data and a markdown narrative.
+- **9 MCP resources**, including verified reference tables (`firewalla://reference/alarm-types`, `firewalla://reference/categories`, `firewalla://reference/query-syntax`) that let an agent ground its queries without crawling source.
+- **Verified query grammar**: tool descriptions and validators reflect the actual Firewalla MSP qualifiers (`box.id`, `device.id`, `remote.region`, `transfer.total`, etc.) — not invented ones.
+- **Agent investigation guide** (`docs/agent-investigation-guide.md`): playbooks, query cookbook, pagination and error patterns for building an investigation loop.
 
 ## Features
 
@@ -369,27 +369,35 @@ If responses are slow:
 2. Use more specific time ranges
 3. Check your network connection to the MSP API
 
-## Available Tools (28 total)
+## Available Tools (37 total)
 
-### Core Tools
-- **Security**: Get alarms, analyze threats
-- **Network**: Monitor traffic flows, track bandwidth usage
-- **Devices**: Check device status, find offline devices
-- **Rules**: Manage firewall rules, pause/resume rules
-- **Search**: Advanced search across all data types
-- **Analytics**: Statistics, trends, and geographic analysis
-- **Target Management**: Create, update, and delete security target lists
+### Categories
+- **Security (2)**: alarm retrieval (`get_active_alarms`, `get_specific_alarm`).
+- **Network (3)**: `get_flow_data`, `get_bandwidth_usage`, `get_offline_devices`.
+- **Device (1)**: `get_device_status`.
+- **Rules (9)**: rule + target-list CRUD plus `get_network_rules_summary`.
+- **Search (5)**: `search_flows`, `search_alarms`, `search_rules`, `search_devices`, `search_target_lists`.
+- **Analytics (8)**: box/region stats, `get_flow_insights`, `get_recent_flow_activity`, `get_alarm_trends`, `get_rule_trends`.
+- **Investigation composite (4)**: `investigate_ip`, `investigate_device`, `get_alarm_context`, `get_target_timeline`.
+- **Report composite (5)**: `generate_security_report`, `generate_threat_analysis`, `generate_bandwidth_analysis_report`, `generate_device_investigation_report`, `generate_network_health_report`.
 
 ### Quick Reference
 ```
-Security: get_active_alarms, get_specific_alarm
-Network: get_flow_data, get_bandwidth_usage, get_offline_devices  
-Devices: get_device_status, get_boxes, search_devices
-Rules: get_network_rules, pause_rule, resume_rule, get_target_lists
-Search: search_flows, search_alarms, search_rules, search_target_lists
-Analytics: get_simple_statistics, get_flow_insights, get_flow_trends, get_alarm_trends
-Management: create_target_list, update_target_list, delete_target_list
+Security:       get_active_alarms, get_specific_alarm
+Network:        get_flow_data, get_bandwidth_usage, get_offline_devices
+Devices:        get_device_status, get_boxes, search_devices
+Rules:          get_network_rules, get_network_rules_summary, pause_rule, resume_rule
+Target lists:   get_target_lists, get_specific_target_list, create_target_list, update_target_list, delete_target_list, search_target_lists
+Search:         search_flows, search_alarms, search_rules
+Analytics:      get_simple_statistics, get_statistics_by_region, get_statistics_by_box,
+                get_recent_flow_activity, get_flow_insights, get_alarm_trends, get_rule_trends
+Investigation:  investigate_ip, investigate_device, get_alarm_context, get_target_timeline
+Reports:        generate_security_report, generate_threat_analysis,
+                generate_bandwidth_analysis_report, generate_device_investigation_report,
+                generate_network_health_report
 ```
+
+See `docs/agent-investigation-guide.md` for tool-selection playbooks and the verified query cookbook.
 
 ## Development
 
@@ -523,15 +531,12 @@ For more detailed troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ## What's New
 
-**Version 1.0.0:**
-- 28 tools with API-verified schemas
-- 24 direct API endpoints + 5 convenience wrappers
-- NEW: get_flow_insights for category-based traffic analysis
-- Advanced search with logical operators (AND, OR, NOT)
-- All limits corrected to API maximum (500)
-- Required parameters added for proper API calls
-- Better caching for faster responses
-- Handles high-volume networks (300k+ flows/day)  
+**Agent-first redesign:**
+- 37 tools (was 28) including 4 investigation composite tools and 5 report composite tools.
+- New MCP reference resources: `firewalla://reference/alarm-types`, `firewalla://reference/categories`, `firewalla://reference/query-syntax`, and `firewalla://boxes`.
+- ListResources and ListPrompts handlers added so agents can discover the surface.
+- Tool descriptions rewritten against the verified Firewalla MSP query grammar (`box.id`, `device.id`, `remote.region`, `transfer.total`, ...); the misleading `gid:`, `bytes:`, bare `mac:`, `status:1` references have been removed.
+- New `docs/agent-investigation-guide.md` documents playbooks, query cookbook, pagination, and error patterns.
 
 ## License
 
