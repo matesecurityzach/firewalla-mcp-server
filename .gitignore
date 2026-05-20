@@ -392,3 +392,22 @@ STRATEGIC-*.md
 VISUAL-*.md
 SIMPLE-*.md
 ANALYSIS-*.md
+
+# AI tooling session state
+# oh-my-claudecode session state: PRDs, plans, ledgers, ralph/ultrawork state, etc.
+.omc/
+
+# Playwright runtime browser data and MCP cache
+.playwright/
+.playwright-mcp/
+
+# Claude Code per-user state
+# Note: .claude/skills/ is repo-shareable and intentionally tracked.
+.claude/projects/
+.claude/agents/
+.claude/state/
+.claude/output-styles/
+.claude/settings.local.json
+.claude/notepad.md
+.claude/project-memory.json
+.claude/CLAUDE.local.md
