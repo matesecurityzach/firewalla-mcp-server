@@ -9,6 +9,14 @@ export interface TransportConfig {
   port: number;
   /** HTTP server path (default: '/mcp', only used when type is 'http') */
   path: string;
+  /** Bind address for the HTTP listener (default: '127.0.0.1', only used when type is 'http') */
+  host: string;
+  /** Allowed Host header values for DNS-rebinding protection (only used when type is 'http') */
+  allowedHosts: string[];
+  /** Allowed Origin header values; empty array means same-origin only (only used when type is 'http') */
+  allowedOrigins: string[];
+  /** Optional bearer token required on every HTTP request (only used when type is 'http') */
+  bearerToken?: string;
 }
 
 /**

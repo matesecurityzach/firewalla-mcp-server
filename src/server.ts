@@ -48,6 +48,8 @@ import { setupTools } from './tools/index.js';
 import { setupResources } from './resources/index.js';
 import { setupPrompts } from './prompts/index.js';
 import { logger } from './monitoring/logger.js';
+import { SecurityManager } from './config/security.js';
+import { timingSafeEqual } from 'node:crypto';
 
 /**
  * UUID v4 validation regex pattern
@@ -73,9 +75,23 @@ export class FirewallaMCPServer {
 
   private server: Server;
   private firewalla: FirewallaClient;
+  private security: SecurityManager;
 
   constructor() {
-    this.server = new Server(
+    this.server = this.createServerInstance();
+    this.firewalla = new FirewallaClient(config);
+    this.security = new SecurityManager();
+    this.setupHandlers(this.server);
+  }
+
+  /**
+   * Constructs a fresh MCP Server instance with the project's capability
+   * declarations. Each call returns a distinct instance — for HTTP transport
+   * we instantiate one per session so that responses from session A cannot be
+   * routed to session B (closes GHSA-345p-7cg4-v4c7).
+   */
+  private createServerInstance(): Server {
+    return new Server(
       {
         name: 'firewalla-mcp-server',
         version: '1.2.0',
@@ -88,17 +104,16 @@ export class FirewallaMCPServer {
         },
       }
     );
-
-    this.firewalla = new FirewallaClient(config);
-    this.setupHandlers();
   }
 
   /**
-   * Sets up MCP protocol request handlers for 29-tool architecture
+   * Sets up MCP protocol request handlers on the given Server instance.
+   * Accepts the target server so callers can attach handlers to per-session
+   * Server instances (HTTP transport) or the single shared instance (stdio).
    */
-  private setupHandlers(): void {
+  private setupHandlers(targetServer: Server): void {
     // List available tools - 28-Tool Complete API Coverage
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    targetServer.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
           // Direct API Endpoints (24 tools)
@@ -1034,13 +1049,13 @@ export class FirewallaMCPServer {
     });
 
     // Set up tool handlers using the registry
-    setupTools(this.server, this.firewalla);
+    setupTools(targetServer, this.firewalla);
 
     // Set up resources
-    setupResources(this.server, this.firewalla);
+    setupResources(targetServer, this.firewalla);
 
     // Set up prompts
-    setupPrompts(this.server, this.firewalla);
+    setupPrompts(targetServer, this.firewalla);
   }
 
   /**
@@ -1070,175 +1085,388 @@ export class FirewallaMCPServer {
   }
 
   /**
-   * Starts the MCP server using HTTP transport with StreamableHTTP
+   * Starts the MCP server using HTTP transport with StreamableHTTP.
+   *
+   * Hardening applied here (vs. a default MCP HTTP setup):
+   *  - Binds to `config.transport.host` (default 127.0.0.1) so the listener
+   *    does NOT default to 0.0.0.0 (every interface).
+   *  - Validates the `Host` header against an allowlist to mitigate DNS
+   *    rebinding attacks from browsers on the same machine.
+   *  - Validates the `Origin` header against an allowlist when configured;
+   *    when the allowlist is empty, only requests with no Origin header
+   *    (curl/Postman/MCP CLI clients) are accepted.
+   *  - Optionally enforces an `Authorization: Bearer <token>` header when
+   *    `MCP_HTTP_BEARER` is set, compared with `timingSafeEqual`.
+   *  - Adds defensive security headers via `SecurityManager.createSecureHeaders`
+   *    to every response.
+   *  - Constructs a fresh `Server` instance per session, so cross-session
+   *    response routing (GHSA-345p-7cg4-v4c7) cannot occur even if a future
+   *    SDK regression reintroduces the shared-server class of bug.
+   *  - Pre-checks `Content-Length` and applies a 30s request timeout to bound
+   *    slow-loris style attacks against the body parser.
+   *  - Also configures the SDK-side `enableDnsRebindingProtection` /
+   *    `allowedHosts` / `allowedOrigins` knobs as defense in depth (still
+   *    available in SDK 1.29 albeit marked deprecated in favor of middleware
+   *    — we do both).
    */
   private async startHttpTransport(): Promise<void> {
-    const { port, path } = config.transport;
+    const {
+      port,
+      path,
+      host,
+      allowedHosts,
+      allowedOrigins,
+      bearerToken,
+    } = config.transport;
 
-    // Map to store transports by session ID
-    const transports = new Map<string, StreamableHTTPServerTransport>();
+    const securityHeaders = this.security.createSecureHeaders();
 
-    // Helper function to parse JSON body from request with size limit
+    // Map to store transports by session ID. We also keep the per-session
+    // Server alongside the transport so it can be torn down together.
+    type Session = {
+      transport: StreamableHTTPServerTransport;
+      server: Server;
+    };
+    const sessions = new Map<string, Session>();
+
+    // Helper to apply security headers + JSON content-type to a response.
+    const writeJsonResponse = (
+      res: ServerResponse,
+      status: number,
+      payload: unknown
+    ): void => {
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        ...securityHeaders,
+      });
+      res.end(JSON.stringify(payload));
+    };
+
+    // Compare two strings in constant time. Returns false on length mismatch
+    // without leaking via timing.
+    const safeCompare = (a: string, b: string): boolean => {
+      const ab = Buffer.from(a);
+      const bb = Buffer.from(b);
+      if (ab.length !== bb.length) {
+        return false;
+      }
+      return timingSafeEqual(ab, bb);
+    };
+
+    // Returns null if the request is allowed, otherwise an HTTP status + a
+    // JSON-RPC error payload to send back. This is the SECURITY GATE for the
+    // HTTP transport; called before any body is read.
+    const checkAuthorization = (
+      req: IncomingMessage
+    ): { status: number; payload: unknown } | null => {
+      // Host header validation — defends against DNS rebinding.
+      const hostHeader = req.headers.host;
+      if (!hostHeader || !allowedHosts.includes(hostHeader)) {
+        logger.warn('HTTP request rejected: Host header not in allowlist', {
+          host_header: hostHeader,
+          allowed_hosts: allowedHosts,
+        });
+        return {
+          status: 403,
+          payload: {
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Forbidden host' },
+            id: null,
+          },
+        };
+      }
+
+      // Origin header validation. When the operator hasn't configured an
+      // origin allowlist, requests with NO Origin header are allowed (the
+      // common case for CLI MCP clients) but any cross-origin browser request
+      // is rejected — the browser always sends Origin for cross-origin fetches.
+      const originHeader = req.headers.origin;
+      if (originHeader !== undefined) {
+        if (allowedOrigins.length === 0) {
+          logger.warn(
+            'HTTP request rejected: Origin header present but no allowlist configured',
+            { origin: originHeader }
+          );
+          return {
+            status: 403,
+            payload: {
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Forbidden origin' },
+              id: null,
+            },
+          };
+        }
+        if (!allowedOrigins.includes(originHeader)) {
+          logger.warn('HTTP request rejected: Origin header not in allowlist', {
+            origin: originHeader,
+          });
+          return {
+            status: 403,
+            payload: {
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Forbidden origin' },
+              id: null,
+            },
+          };
+        }
+      }
+
+      // Optional bearer token. Activated only when MCP_HTTP_BEARER is set;
+      // otherwise the transport relies on Host/Origin checks + loopback bind.
+      if (bearerToken) {
+        const authHeader = req.headers.authorization;
+        const expected = `Bearer ${bearerToken}`;
+        if (!authHeader || !safeCompare(authHeader, expected)) {
+          return {
+            status: 401,
+            payload: {
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Unauthorized' },
+              id: null,
+            },
+          };
+        }
+      }
+
+      return null;
+    };
+
+    // Read JSON body with a strict size cap, a Content-Length precheck (so we
+    // don't even start reading a 100MB body), and a 30s timeout (so a slow
+    // sender can't pin a socket open holding a body parser hostage).
     const parseJsonBody = async (req: IncomingMessage): Promise<unknown> => {
-      const MAX_BODY_SIZE = 1024 * 1024; // 1MB limit to prevent memory exhaustion
+      const MAX_BODY_SIZE = 1024 * 1024; // 1 MiB
+      const REQUEST_TIMEOUT_MS = 30_000;
+
+      const declaredLen = parseInt(
+        req.headers['content-length'] ?? '0',
+        10
+      );
+      if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_SIZE) {
+        req.destroy();
+        throw new Error('Request body too large (max 1MB)');
+      }
+
       return new Promise((resolve, reject) => {
         let body = '';
         let size = 0;
+        let settled = false;
+        const settle = (fn: () => void): void => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+
+        const timer = setTimeout(() => {
+          req.destroy();
+          settle(() =>
+            reject(new Error('Request body read timed out after 30s'))
+          );
+        }, REQUEST_TIMEOUT_MS);
+
         req.on('data', chunk => {
           size += chunk.length;
           if (size > MAX_BODY_SIZE) {
+            clearTimeout(timer);
             req.destroy();
-            reject(new Error('Request body too large (max 1MB)'));
+            settle(() =>
+              reject(new Error('Request body too large (max 1MB)'))
+            );
             return;
           }
           body += chunk.toString();
         });
         req.on('end', () => {
+          clearTimeout(timer);
           try {
-            resolve(body ? JSON.parse(body) : null);
+            settle(() => resolve(body ? JSON.parse(body) : null));
           } catch (_error) {
-            reject(new Error('Invalid JSON in request body'));
+            settle(() => reject(new Error('Invalid JSON in request body')));
           }
         });
-        req.on('error', reject);
+        req.on('error', err => {
+          clearTimeout(timer);
+          settle(() => reject(err));
+        });
       });
     };
 
-    // Create HTTP server
-    const httpServer = createServer(
-      (req: IncomingMessage, res: ServerResponse) => {
-        void (async () => {
-          // Only handle requests to our configured path
-          if (!req.url?.startsWith(path)) {
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Not found' }));
-            return;
-          }
+    // Construct the per-request HTTP handler. Captures `this` via the
+    // outer-arrow so it can call setupHandlers / createServerInstance.
+    const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
+      void (async () => {
+        // Path gate first — anything outside our configured /mcp prefix gets
+        // 404 without even surfacing in security logs.
+        if (!req.url?.startsWith(path)) {
+          writeJsonResponse(res, 404, { error: 'Not found' });
+          return;
+        }
 
-          const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        // Security gate: Host / Origin / Bearer. Runs BEFORE body parsing.
+        const rejection = checkAuthorization(req);
+        if (rejection) {
+          writeJsonResponse(res, rejection.status, rejection.payload);
+          return;
+        }
 
-          // Validate session ID format if present
-          if (sessionId && !isValidUUID(sessionId)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+        // Validate session ID format if present
+        if (sessionId && !isValidUUID(sessionId)) {
+          writeJsonResponse(res, 400, {
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Invalid session ID format (must be UUID v4)',
+            },
+            id: null,
+          });
+          return;
+        }
+
+        try {
+          if (req.method === 'POST') {
+            // Handle POST requests for MCP messages
+            const parsedBody = await parseJsonBody(req);
+
+            let transport: StreamableHTTPServerTransport;
+
+            if (sessionId && sessions.has(sessionId)) {
+              // Reuse existing transport for this session
+              transport = sessions.get(sessionId)!.transport;
+            } else if (!sessionId && isInitializeRequest(parsedBody)) {
+              // New initialization request — create new transport AND a
+              // fresh Server instance scoped to this session. The fresh
+              // Server is the structural fix for GHSA-345p-7cg4-v4c7
+              // (cross-client data leak via shared server/transport).
+              const newSessionId = randomUUID();
+              transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: () => newSessionId,
+                enableDnsRebindingProtection: true,
+                allowedHosts,
+                allowedOrigins:
+                  allowedOrigins.length > 0 ? allowedOrigins : undefined,
+                onsessioninitialized: (initializedSessionId: string) => {
+                  logger.info(
+                    `HTTP session initialized: ${initializedSessionId}`
+                  );
+                },
+              });
+
+              const sessionServer = this.createServerInstance();
+              this.setupHandlers(sessionServer);
+
+              // Store session before connect to avoid the well-known race
+              // between connect()-time message arrival and map population.
+              sessions.set(newSessionId, {
+                transport,
+                server: sessionServer,
+              });
+
+              // Tear down both the transport and the per-session Server
+              // when the client disconnects.
+              transport.onclose = () => {
+                const sid = transport.sessionId;
+                if (sid && sessions.has(sid)) {
+                  const sess = sessions.get(sid)!;
+                  logger.info(`HTTP session closed: ${sid}`);
+                  sessions.delete(sid);
+                  // best-effort: detach server. Server.close() exists in
+                  // SDK; ignore errors since the transport is already going.
+                  sess.server.close().catch(() => {
+                    /* deliberately ignored */
+                  });
+                }
+              };
+
+              await sessionServer.connect(transport);
+            } else {
+              writeJsonResponse(res, 400, {
                 jsonrpc: '2.0',
                 error: {
                   code: -32000,
-                  message: 'Invalid session ID format (must be UUID v4)',
+                  message: 'Bad Request: No valid session ID provided',
                 },
                 id: null,
-              })
-            );
-            return;
-          }
-
-          try {
-            if (req.method === 'POST') {
-              // Handle POST requests for MCP messages
-              const parsedBody = await parseJsonBody(req);
-
-              let transport: StreamableHTTPServerTransport;
-
-              if (sessionId && transports.has(sessionId)) {
-                // Reuse existing transport for this session
-                transport = transports.get(sessionId)!;
-              } else if (!sessionId && isInitializeRequest(parsedBody)) {
-                // New initialization request - create new transport
-                // Generate session ID immediately to prevent race condition
-                const newSessionId = randomUUID();
-                transport = new StreamableHTTPServerTransport({
-                  sessionIdGenerator: () => newSessionId,
-                  onsessioninitialized: (initializedSessionId: string) => {
-                    logger.info(
-                      `HTTP session initialized: ${initializedSessionId}`
-                    );
-                    // Transport already in map, no need to add again
-                  },
-                });
-
-                // Store transport immediately to prevent race condition
-                // This ensures the transport is available before handleRequest is called
-                transports.set(newSessionId, transport);
-
-                // Set up cleanup handler
-                transport.onclose = () => {
-                  const sid = transport.sessionId;
-                  if (sid && transports.has(sid)) {
-                    logger.info(`HTTP session closed: ${sid}`);
-                    transports.delete(sid);
-                  }
-                };
-
-                // Connect transport to server
-                await this.server.connect(transport);
-              } else {
-                // Invalid request - no session ID or not initialization request
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(
-                  JSON.stringify({
-                    jsonrpc: '2.0',
-                    error: {
-                      code: -32000,
-                      message: 'Bad Request: No valid session ID provided',
-                    },
-                    id: null,
-                  })
-                );
-                return;
-              }
-
-              // Handle the request
-              await transport.handleRequest(req, res, parsedBody);
-            } else if (req.method === 'GET') {
-              // Handle GET requests for SSE streams
-              if (!sessionId || !transports.has(sessionId)) {
-                res.writeHead(400, { 'Content-Type': 'text/plain' });
-                res.end('Invalid or missing session ID');
-                return;
-              }
-
-              const transport = transports.get(sessionId)!;
-              await transport.handleRequest(req, res);
-            } else if (req.method === 'DELETE') {
-              // Handle DELETE requests for session termination
-              if (!sessionId || !transports.has(sessionId)) {
-                res.writeHead(400, { 'Content-Type': 'text/plain' });
-                res.end('Invalid or missing session ID');
-                return;
-              }
-
-              const transport = transports.get(sessionId)!;
-              await transport.handleRequest(req, res);
-            } else {
-              // Unsupported method
-              res.writeHead(405, { 'Content-Type': 'text/plain' });
-              res.end('Method Not Allowed');
+              });
+              return;
             }
-          } catch (error) {
-            logger.error(
-              'Error handling HTTP request:',
-              error instanceof Error ? error : new Error(String(error))
-            );
-            if (!res.headersSent) {
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(
-                JSON.stringify({
-                  jsonrpc: '2.0',
-                  error: {
-                    code: -32603,
-                    message: 'Internal server error',
-                  },
-                  id: null,
-                })
-              );
-            }
-          }
-        })();
-      }
-    );
 
-    // Start listening with error handling
+            // Apply security headers to the eventual response. Note: the
+            // SDK transport writes its own response headers; we set ours
+            // first via writeHead earlier paths; for the streaming path
+            // we set them on a wrapped response below.
+            for (const [k, v] of Object.entries(securityHeaders)) {
+              res.setHeader(k, v);
+            }
+
+            await transport.handleRequest(req, res, parsedBody);
+          } else if (req.method === 'GET') {
+            // SSE stream — must have a known session.
+            if (!sessionId || !sessions.has(sessionId)) {
+              writeJsonResponse(res, 400, {
+                jsonrpc: '2.0',
+                error: {
+                  code: -32000,
+                  message: 'Invalid or missing session ID',
+                },
+                id: null,
+              });
+              return;
+            }
+            for (const [k, v] of Object.entries(securityHeaders)) {
+              res.setHeader(k, v);
+            }
+            const { transport } = sessions.get(sessionId)!;
+            await transport.handleRequest(req, res);
+          } else if (req.method === 'DELETE') {
+            if (!sessionId || !sessions.has(sessionId)) {
+              writeJsonResponse(res, 400, {
+                jsonrpc: '2.0',
+                error: {
+                  code: -32000,
+                  message: 'Invalid or missing session ID',
+                },
+                id: null,
+              });
+              return;
+            }
+            for (const [k, v] of Object.entries(securityHeaders)) {
+              res.setHeader(k, v);
+            }
+            const { transport } = sessions.get(sessionId)!;
+            await transport.handleRequest(req, res);
+          } else {
+            res.writeHead(405, {
+              'Content-Type': 'text/plain',
+              ...securityHeaders,
+            });
+            res.end('Method Not Allowed');
+          }
+        } catch (error) {
+          logger.error(
+            'Error handling HTTP request:',
+            error instanceof Error ? error : new Error(String(error))
+          );
+          if (!res.headersSent) {
+            writeJsonResponse(res, 500, {
+              jsonrpc: '2.0',
+              error: {
+                code: -32603,
+                message: 'Internal server error',
+              },
+              id: null,
+            });
+          }
+        }
+      })();
+    };
+
+    const httpServer = createServer(requestHandler);
+
+    // Start listening with error handling. Binding to `host` (default
+    // 127.0.0.1) is the difference between exposing this server to LAN
+    // neighbors vs. only the local machine.
     await new Promise<void>((resolve, reject) => {
       httpServer.on('error', err => {
         logger.error(
@@ -1248,11 +1476,15 @@ export class FirewallaMCPServer {
         reject(err);
       });
 
-      httpServer.listen(port, () => {
+      httpServer.listen(port, host, () => {
         logger.info(
           `Firewalla MCP Server running with 37 tools on HTTP transport`
         );
-        logger.info(`HTTP server listening on http://localhost:${port}${path}`);
+        logger.info(
+          `HTTP server listening on http://${host}:${port}${path} ` +
+            `(allowedHosts=${allowedHosts.length}, allowedOrigins=${allowedOrigins.length}, ` +
+            `bearerAuth=${bearerToken ? 'on' : 'off'})`
+        );
         resolve();
       });
     });
@@ -1270,14 +1502,15 @@ export class FirewallaMCPServer {
       void (async () => {
         logger.info('Shutting down HTTP server...');
 
-        // Close all active transports
-        for (const [sessionId, transport] of transports.entries()) {
+        // Close all active sessions — transport AND the per-session Server.
+        for (const [sessionId, sess] of sessions.entries()) {
           try {
-            await transport.close();
-            transports.delete(sessionId);
+            await sess.transport.close();
+            await sess.server.close();
+            sessions.delete(sessionId);
           } catch (error) {
             logger.error(
-              `Error closing transport for session ${sessionId}:`,
+              `Error closing session ${sessionId}:`,
               error instanceof Error ? error : new Error(String(error))
             );
           }

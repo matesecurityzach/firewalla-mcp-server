@@ -26,6 +26,9 @@ export function getTestConfig(): FirewallaConfig {
       type: 'stdio',
       port: 3000,
       path: '/mcp',
+      host: '127.0.0.1',
+      allowedHosts: ['localhost', '127.0.0.1'],
+      allowedOrigins: [],
     },
   };
 }
