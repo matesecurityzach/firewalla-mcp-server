@@ -155,13 +155,14 @@ export class FirewallaMCPServer {
           {
             name: 'get_specific_alarm',
             description:
-              'Get detailed information for a specific Firewalla alarm',
+              'Fetch one full alarm record by its alarm id (aid). Returns the alarm plus device + remote context. Required: alarm_id. Where to get alarm_id: the "aid" field on any item returned by get_active_alarms or search_alarms. For an alarm plus its sibling alarms (same device / same remote / same type within a time window), prefer get_alarm_context.',
             inputSchema: {
               type: 'object',
               properties: {
                 alarm_id: {
                   type: 'string',
-                  description: 'Alarm ID (required for API call)',
+                  description:
+                    'Required. The alarm id (aid) as returned by get_active_alarms or search_alarms. Format varies by Firewalla version; pass through verbatim. Example: "abcdef01-2345-6789-abcd-ef0123456789".',
                 },
               },
               required: ['alarm_id'],
@@ -223,25 +224,26 @@ export class FirewallaMCPServer {
           {
             name: 'get_device_status',
             description:
-              'List devices on the network with current online/offline status, IP, MAC vendor, network, group, and bytes counters. Investigation use: device inventory pull. For "what has device X been doing?" prefer investigate_device.',
+              'List devices on the network with current online/offline status, IP, MAC vendor, network, group, and bytes counters. Investigation use: device inventory pull. For "what has device X been doing?" prefer investigate_device. Required: limit. Default scope: all boxes the MSP token can see (or the box pinned by FIREWALLA_BOX_ID).',
             inputSchema: {
               type: 'object',
               properties: {
                 limit: {
                   type: 'number',
-                  description: 'Maximum number of devices to return (required)',
+                  description:
+                    'Required. Maximum number of devices to return (1-1000). Start with 100 and paginate via search_devices if you need more.',
                   minimum: 1,
                   maximum: 1000,
                 },
                 box: {
                   type: 'string',
                   description:
-                    'Get devices under a specific Firewalla box (requires box ID)',
+                    'Optional. Box GID (UUID). Restricts results to one Firewalla box. Get from get_boxes (each box has a "gid" field). Example: "1eb71e38-3a95-4b13-922d-542b84e9bbe3".',
                 },
                 group: {
                   type: 'string',
                   description:
-                    'Get devices under a specific box group (requires group ID)',
+                    'Optional. Box group id. Restricts results to one box group. Get from get_boxes (each box has a "group.id" field when grouped).',
                 },
               },
               required: ['limit'],
@@ -249,19 +251,22 @@ export class FirewallaMCPServer {
           },
           {
             name: 'get_network_rules',
-            description: 'Retrieve firewall rules and conditions',
+            description:
+              'Retrieve firewall rules (allow / block / time-limit policies). Required: limit. Optional query is passed straight through to the MSP API; only verified MSP rule qualifiers will match server-side. For richer client-side filtering (target.type, target.value, scope, etc.), use search_rules. For an overview by category, use get_network_rules_summary.',
             inputSchema: {
               type: 'object',
               properties: {
                 limit: {
                   type: 'number',
-                  description: 'Maximum number of rules to return (required)',
+                  description:
+                    'Required. Maximum number of rules to return (1-1000).',
                   minimum: 1,
                   maximum: 1000,
                 },
                 query: {
                   type: 'string',
-                  description: 'Search conditions for filtering rules',
+                  description:
+                    'Optional Firewalla MSP rule query, passed verbatim to the API. Verified qualifiers: status:active|paused, action:allow|block|timelimit, box.id:UUID, box.group.id:GROUPID, device.id:"mac:AA:BB:CC:DD:EE:FF". Combine with spaces (implicit-AND). Examples: "status:active action:block", "box.id:1eb71e38-...". For broader filtering (target.value:*.facebook.com, target.type, scope.type, etc.) use search_rules instead.',
                 },
               },
               required: ['limit'],
@@ -270,25 +275,27 @@ export class FirewallaMCPServer {
           {
             name: 'pause_rule',
             description:
-              'Temporarily disable an active firewall rule for a specified duration',
+              'WRITE OPERATION. Temporarily disable an active firewall rule for a fixed duration; it auto-resumes when the timer expires. Required: rule_id, box. Pre-check the rule with search_rules (query "id:<rule_id>") if you are unsure of its current status — pausing an already-paused rule returns an error. To extend a pause, resume first then call pause_rule again.',
             inputSchema: {
               type: 'object',
               properties: {
                 rule_id: {
                   type: 'string',
-                  description: 'Rule ID to pause',
+                  description:
+                    'Required. The rule id (pid) returned in the "id" field by get_network_rules / search_rules. Pass through verbatim.',
                 },
                 duration: {
                   type: 'number',
                   description:
-                    'Duration in minutes to pause the rule (optional, default: 60, range: 1-1440)',
+                    'Optional. Pause duration in MINUTES (1-1440, default 60). The rule auto-resumes when this elapses; there is no way to pause indefinitely.',
                   minimum: 1,
                   maximum: 1440,
                   default: 60,
                 },
                 box: {
                   type: 'string',
-                  description: 'Box GID for context (required by API)',
+                  description:
+                    'Required. Box GID (UUID) that owns this rule. Get from get_boxes or from the rule object\'s "box.id" field.',
                 },
               },
               required: ['rule_id', 'box'],
@@ -297,17 +304,19 @@ export class FirewallaMCPServer {
           {
             name: 'resume_rule',
             description:
-              'Resume a previously paused firewall rule, restoring it to active state',
+              'WRITE OPERATION. Resume a previously paused firewall rule, restoring it to active state immediately. Required: rule_id, box. No-op if the rule is already active.',
             inputSchema: {
               type: 'object',
               properties: {
                 rule_id: {
                   type: 'string',
-                  description: 'Rule ID to resume',
+                  description:
+                    'Required. The rule id (pid) returned in the "id" field by get_network_rules / search_rules.',
                 },
                 box: {
                   type: 'string',
-                  description: 'Box GID for context (required by API)',
+                  description:
+                    'Required. Box GID (UUID) that owns this rule. Get from get_boxes or from the rule object\'s "box.id" field.',
                 },
               },
               required: ['rule_id', 'box'],
@@ -315,14 +324,15 @@ export class FirewallaMCPServer {
           },
           {
             name: 'get_target_lists',
-            description: 'Retrieve all target lists from Firewalla',
+            description:
+              'List all target lists (named, reusable bundles of domains / IPs / CIDR ranges used by firewall rules). Required: limit. Returns each list\'s id, name, owner, category, target count, and member entries. For client-side filtering by name/category/owner/targets, use search_target_lists.',
             inputSchema: {
               type: 'object',
               properties: {
                 limit: {
                   type: 'number',
                   description:
-                    'Maximum number of target lists to return (required)',
+                    'Required. Maximum number of target lists to return (1-1000).',
                   minimum: 1,
                   maximum: 1000,
                 },
@@ -332,13 +342,15 @@ export class FirewallaMCPServer {
           },
           {
             name: 'get_specific_target_list',
-            description: 'Retrieve a specific target list by ID',
+            description:
+              'Fetch one target list by its id, including the full member list (every domain / IP / CIDR in the bundle). Required: id. Use get_target_lists or search_target_lists to discover ids.',
             inputSchema: {
               type: 'object',
               properties: {
                 id: {
                   type: 'string',
-                  description: 'Target list ID (required)',
+                  description:
+                    'Required. Target list id as returned by get_target_lists ("id" field). Pass through verbatim. Example: "TL-built-in-1".',
                 },
               },
               required: ['id'],
@@ -346,18 +358,21 @@ export class FirewallaMCPServer {
           },
           {
             name: 'create_target_list',
-            description: 'Create a new target list',
+            description:
+              'WRITE OPERATION. Create a new target list (a reusable bundle of domains / IPs / CIDR ranges that firewall rules can reference by id). Required: name, owner, targets. The returned object includes the new "id" — use it to reference the list from rules. To add entries to an existing list later, use update_target_list (full replacement of the targets array).',
             inputSchema: {
               type: 'object',
               properties: {
                 name: {
                   type: 'string',
-                  description: 'Target list name (required, max 24 chars)',
+                  description:
+                    'Required. Display name (max 24 chars). Example: "Block Social Media".',
                   maxLength: 24,
                 },
                 owner: {
                   type: 'string',
-                  description: 'Owner: "global" or box GID (required)',
+                  description:
+                    'Required. Scope: "global" (visible to every box on the MSP account) or a box GID (UUID) to restrict to a single Firewalla. Get box GIDs from get_boxes.',
                 },
                 targets: {
                   type: 'array',
@@ -365,7 +380,7 @@ export class FirewallaMCPServer {
                     type: 'string',
                   },
                   description:
-                    'Array of domains, IPs, or CIDR ranges (required)',
+                    'Required. Array of entries; each is a domain (e.g. "facebook.com" or "*.facebook.com"), IPv4/IPv6 address ("1.2.3.4"), or CIDR range ("192.168.1.0/24"). At least one entry.',
                 },
                 category: {
                   type: 'string',
@@ -383,11 +398,13 @@ export class FirewallaMCPServer {
                     'video',
                     'vpn',
                   ],
-                  description: 'Content category (optional)',
+                  description:
+                    'Optional. Content category — drives default UX grouping. See firewalla://reference/categories.',
                 },
                 notes: {
                   type: 'string',
-                  description: 'Additional description (optional)',
+                  description:
+                    'Optional. Free-form description shown in the Firewalla UI.',
                 },
               },
               required: ['name', 'owner', 'targets'],
@@ -395,17 +412,20 @@ export class FirewallaMCPServer {
           },
           {
             name: 'update_target_list',
-            description: 'Update an existing target list',
+            description:
+              'WRITE OPERATION. Update an existing target list. Required: id. All other fields are optional; only the fields you pass are changed. IMPORTANT: passing `targets` REPLACES the entire member list — to add one entry, first fetch the list with get_specific_target_list, append, and send back the full array.',
             inputSchema: {
               type: 'object',
               properties: {
                 id: {
                   type: 'string',
-                  description: 'Target list ID (required)',
+                  description:
+                    'Required. Target list id from get_target_lists.',
                 },
                 name: {
                   type: 'string',
-                  description: 'Updated target list name (max 24 chars)',
+                  description:
+                    'Optional. Updated display name (max 24 chars).',
                   maxLength: 24,
                 },
                 targets: {
@@ -413,7 +433,8 @@ export class FirewallaMCPServer {
                   items: {
                     type: 'string',
                   },
-                  description: 'Updated array of domains, IPs, or CIDR ranges',
+                  description:
+                    'Optional. FULL REPLACEMENT array of domains / IPs / CIDR ranges. To append, read the list first then send the merged array.',
                 },
                 category: {
                   type: 'string',
@@ -431,11 +452,12 @@ export class FirewallaMCPServer {
                     'video',
                     'vpn',
                   ],
-                  description: 'Updated content category',
+                  description:
+                    'Optional. Updated content category. See firewalla://reference/categories.',
                 },
                 notes: {
                   type: 'string',
-                  description: 'Updated description',
+                  description: 'Optional. Updated free-form description.',
                 },
               },
               required: ['id'],
@@ -443,13 +465,15 @@ export class FirewallaMCPServer {
           },
           {
             name: 'delete_target_list',
-            description: 'Delete a target list',
+            description:
+              'WRITE OPERATION (destructive). Permanently delete a target list. Required: id. Any firewall rule referencing this list will lose its target set — verify nothing critical depends on it (search_rules query "target.value:<list_id>") before calling.',
             inputSchema: {
               type: 'object',
               properties: {
                 id: {
                   type: 'string',
-                  description: 'Target list ID to delete (required)',
+                  description:
+                    'Required. Target list id to delete (from get_target_lists).',
                 },
               },
               required: ['id'],
@@ -547,14 +571,15 @@ export class FirewallaMCPServer {
           },
           {
             name: 'get_boxes',
-            description: 'Retrieve list of Firewalla boxes',
+            description:
+              'List Firewalla boxes accessible to the MSP token. Returns each box\'s gid (UUID), name, model, online status, version, and group membership. No required parameters. Use this first when you need a box GID to pass to other tools.',
             inputSchema: {
               type: 'object',
               properties: {
                 group: {
                   type: 'string',
                   description:
-                    'Get boxes within a specific group (requires group ID)',
+                    'Optional. Box group id — restricts results to boxes within one group. Group ids come from a prior get_boxes call (box.group.id).',
                 },
               },
               required: [],
@@ -562,13 +587,15 @@ export class FirewallaMCPServer {
           },
           {
             name: 'get_simple_statistics',
-            description: 'Retrieve basic statistics overview',
+            description:
+              'Top-level counts across the MSP account: online/offline box count, total alarms, total rules, total flows in the last 24h. No required parameters. Use as a one-shot health snapshot before drilling into other tools.',
             inputSchema: {
               type: 'object',
               properties: {
                 group: {
                   type: 'string',
-                  description: 'Get statistics for specific box group',
+                  description:
+                    'Optional. Box group id — scope the statistics to one group of boxes.',
                 },
               },
               required: [],
@@ -577,18 +604,19 @@ export class FirewallaMCPServer {
           {
             name: 'get_statistics_by_region',
             description:
-              'Retrieve statistics by region (top regions by blocked flows)',
+              'Top regions (ISO-3166 country codes) ranked by blocked-flow count. Useful for "where are blocked outbound flows headed?". No required parameters.',
             inputSchema: {
               type: 'object',
               properties: {
                 group: {
                   type: 'string',
-                  description: 'Get statistics for specific box group',
+                  description:
+                    'Optional. Box group id — scope statistics to one group.',
                 },
                 limit: {
                   type: 'number',
                   description:
-                    'Maximum number of results (optional, default: 5)',
+                    'Optional. Maximum number of regions to return (default: 5).',
                   minimum: 1,
                   default: 5,
                 },
@@ -599,24 +627,26 @@ export class FirewallaMCPServer {
           {
             name: 'get_statistics_by_box',
             description:
-              'Get statistics for each Firewalla box (top boxes by blocked flows or security alarms)',
+              'Rank Firewalla boxes by one of two metrics: total blocked flows or total security alarms. Useful for "which box is taking the most heat?". No required parameters.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['topBoxesByBlockedFlows', 'topBoxesBySecurityAlarms'],
-                  description: 'Statistics type to retrieve',
+                  description:
+                    'Optional. Metric to rank by (default: topBoxesByBlockedFlows). "topBoxesBySecurityAlarms" ranks by alarm count.',
                   default: 'topBoxesByBlockedFlows',
                 },
                 group: {
                   type: 'string',
-                  description: 'Get statistics for specific box group',
+                  description:
+                    'Optional. Box group id — scope statistics to one group.',
                 },
                 limit: {
                   type: 'number',
                   description:
-                    'Maximum number of results (optional, default: 5)',
+                    'Optional. Maximum number of boxes to return (default: 5).',
                   minimum: 1,
                   default: 5,
                 },
@@ -682,13 +712,14 @@ export class FirewallaMCPServer {
           {
             name: 'get_alarm_trends',
             description:
-              'Get historical alarm trend data (alarms generated per day)',
+              'Daily alarm volume time series for the last ~30 days (one bucket per day). Useful for spotting whether alarms are spiking or trailing off. No required parameters.',
             inputSchema: {
               type: 'object',
               properties: {
                 group: {
                   type: 'string',
-                  description: 'Get trends for a specific box group',
+                  description:
+                    'Optional. Box group id — scope trend to one group.',
                 },
               },
               required: [],
@@ -697,13 +728,14 @@ export class FirewallaMCPServer {
           {
             name: 'get_rule_trends',
             description:
-              'Get historical rule trend data (rules created per day)',
+              'Daily count of new firewall rules created over the last ~30 days. Useful for change-management visibility. No required parameters.',
             inputSchema: {
               type: 'object',
               properties: {
                 group: {
                   type: 'string',
-                  description: 'Get trends for a specific box group',
+                  description:
+                    'Optional. Box group id — scope trend to one group.',
                 },
               },
               required: [],
@@ -713,25 +745,28 @@ export class FirewallaMCPServer {
           {
             name: 'get_bandwidth_usage',
             description:
-              'Get top bandwidth consuming devices (convenience wrapper around get_device_status)',
+              'Top bandwidth-consuming devices for a time window, ranked by total bytes (download + upload). Required: period. For per-device flow detail behind the totals, follow up with investigate_device or search_flows scoped to the device id.',
             inputSchema: {
               type: 'object',
               properties: {
                 period: {
                   type: 'string',
-                  description: 'Time period for bandwidth calculation',
+                  description:
+                    'Required. Time window for the bandwidth roll-up. One of: "1h", "24h", "7d", "30d".',
                   enum: ['1h', '24h', '7d', '30d'],
                 },
                 limit: {
                   type: 'number',
-                  description: 'Number of top devices to return',
+                  description:
+                    'Optional. Number of top devices to return (1-500, default: 10).',
                   minimum: 1,
                   maximum: 500,
                   default: 10,
                 },
                 box: {
                   type: 'string',
-                  description: 'Filter devices under a specific Firewalla box',
+                  description:
+                    'Optional. Box GID (UUID) — restrict to one Firewalla box. Get from get_boxes.',
                 },
               },
               required: ['period'],
@@ -740,25 +775,28 @@ export class FirewallaMCPServer {
           {
             name: 'get_offline_devices',
             description:
-              'Get all offline devices (convenience wrapper around get_device_status)',
+              'List devices currently marked offline by Firewalla. No required parameters — defaults return the 100 most-recently-offline devices. Useful for "what hasn\'t checked in lately?".',
             inputSchema: {
               type: 'object',
               properties: {
                 limit: {
                   type: 'number',
-                  description: 'Maximum number of offline devices to return',
+                  description:
+                    'Optional. Maximum offline devices to return (1-500, default: 100).',
                   minimum: 1,
                   maximum: 500,
                   default: 100,
                 },
                 sort_by_last_seen: {
                   type: 'boolean',
-                  description: 'Sort devices by last seen time (default: true)',
+                  description:
+                    'Optional. When true (default), sort by last_seen descending (most-recently-online first). When false, default API ordering.',
                   default: true,
                 },
                 box: {
                   type: 'string',
-                  description: 'Filter devices under a specific Firewalla box',
+                  description:
+                    'Optional. Box GID (UUID) — restrict to one Firewalla box.',
                 },
               },
               required: [],
@@ -831,19 +869,20 @@ export class FirewallaMCPServer {
           {
             name: 'get_network_rules_summary',
             description:
-              'Get overview statistics and counts of network rules by category (convenience wrapper)',
+              'High-level rollup of firewall rules: total count, counts by action (allow / block / timelimit), counts by target type (domain / category / ip / country / app), and active-vs-paused counts. No required parameters. Useful for "what does the firewall policy look like at a glance?" before drilling in with search_rules.',
             inputSchema: {
               type: 'object',
               properties: {
                 active_only: {
                   type: 'boolean',
                   description:
-                    'Only include active rules in summary (default: true)',
+                    'Optional. When true (default), only count rules with status:active. Set false to include paused rules.',
                   default: true,
                 },
                 rule_type: {
                   type: 'string',
-                  description: 'Filter by rule type',
+                  description:
+                    'Optional. Filter the rollup to a single action: "allow" | "block" | "timelimit".',
                 },
               },
               required: [],
@@ -956,14 +995,15 @@ export class FirewallaMCPServer {
           {
             name: 'generate_security_report',
             description:
-              'Compose a structured Firewalla security report (status + metrics + active alarms + recent threats). Returns { data, narrative } where narrative matches the security_report prompt output.',
+              'Compose a structured Firewalla security report (status + metrics + active alarms + recent threats) over the chosen window. No required parameters. Returns { data, narrative } where narrative matches the security_report MCP prompt output. Use this for a human-readable executive summary; for raw alarm pulls use get_active_alarms / search_alarms.',
             inputSchema: {
               type: 'object',
               properties: {
                 period: {
                   type: 'string',
                   enum: ['24h', '7d', '30d'],
-                  description: 'Lookback period (default: 24h).',
+                  description:
+                    'Optional. Lookback window (default: "24h"). One of: "24h", "7d", "30d".',
                   default: '24h',
                 },
               },
@@ -973,14 +1013,15 @@ export class FirewallaMCPServer {
           {
             name: 'generate_threat_analysis',
             description:
-              'Run a threat-pattern analysis (alarms + threats + rule status). Returns { data, narrative }.',
+              'Run a threat-pattern analysis correlating active alarms, recent threats, and current rule coverage. No required parameters. Returns { data, narrative }. Use after generate_security_report when you want a deeper "what threats are recurring?" view.',
             inputSchema: {
               type: 'object',
               properties: {
                 severity_threshold: {
                   type: 'string',
                   enum: ['low', 'medium', 'high', 'critical'],
-                  description: 'Minimum severity to include (default: medium).',
+                  description:
+                    'Optional. Drop signals below this severity (default: "medium"). One of: "low" | "medium" | "high" | "critical".',
                   default: 'medium',
                 },
               },
@@ -990,19 +1031,20 @@ export class FirewallaMCPServer {
           {
             name: 'generate_bandwidth_analysis_report',
             description:
-              'Compose a bandwidth-analysis report. Returns { data, narrative }. Requires period.',
+              'Compose a bandwidth-analysis report: top consumers, heavy-user counts, period totals. Required: period. Returns { data, narrative }.',
             inputSchema: {
               type: 'object',
               properties: {
                 period: {
                   type: 'string',
                   enum: ['1h', '24h', '7d', '30d'],
-                  description: 'Time period (required).',
+                  description:
+                    'Required. Lookback window. One of: "1h" | "24h" | "7d" | "30d".',
                 },
                 threshold_mb: {
                   type: 'number',
                   description:
-                    'Bandwidth threshold in MB (default: 100). Devices above this counted as "heavy".',
+                    'Optional. "Heavy user" threshold in megabytes (default: 100). Devices whose total transfer exceeds this in the window are counted as heavy users.',
                   minimum: 1,
                   default: 100,
                 },
@@ -1013,18 +1055,19 @@ export class FirewallaMCPServer {
           {
             name: 'generate_device_investigation_report',
             description:
-              'Compose a device-investigation report. Returns { data, narrative }. For raw correlation without the narrative, use investigate_device.',
+              'Compose a device-investigation report with narrative summary. Required: device_id. Returns { data, narrative }. For raw correlated data without the narrative, prefer investigate_device.',
             inputSchema: {
               type: 'object',
               properties: {
                 device_id: {
                   type: 'string',
                   description:
-                    'Device id (required). E.g. "mac:AA:BB:CC:DD:EE:FF".',
+                    'Required. Full device id (preferred format "mac:AA:BB:CC:DD:EE:FF"; also accepts "wg_peer:..." and "ovpn:..."). Source from get_device_status, search_devices, or alarm.device.id.',
                 },
                 lookback_hours: {
                   type: 'number',
-                  description: 'Lookback window in hours (default: 24).',
+                  description:
+                    'Optional. Lookback window in hours (1-720, default: 24).',
                   minimum: 1,
                   maximum: 720,
                   default: 24,
@@ -1036,7 +1079,7 @@ export class FirewallaMCPServer {
           {
             name: 'generate_network_health_report',
             description:
-              'Compose a holistic network-health report. Returns { data, narrative } including performance, security, and overall health scores.',
+              'Compose a holistic network-health report (performance + security + overall health scores, plus contributing signals). No required parameters. Returns { data, narrative }.',
             inputSchema: {
               type: 'object',
               properties: {},
