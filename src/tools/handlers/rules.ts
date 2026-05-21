@@ -355,10 +355,15 @@ export class PauseRuleHandler extends BaseToolHandler {
           ...VALIDATION_CONFIG.DURATION_MINUTES,
         }
       );
+      const boxValidation = ParameterValidator.validateRequiredString(
+        args?.box,
+        'box'
+      );
 
       const validationResult = ParameterValidator.combineValidationResults([
         ruleIdValidation,
         durationValidation,
+        boxValidation,
       ]);
 
       if (!validationResult.isValid) {
@@ -373,6 +378,7 @@ export class PauseRuleHandler extends BaseToolHandler {
 
       const ruleId = ruleIdValidation.sanitizedValue as string;
       const duration = durationValidation.sanitizedValue as number;
+      const box = boxValidation.sanitizedValue as string;
 
       // Check rule status before attempting to pause it
       const statusCheck = await checkRuleStatus(ruleId, this.name, firewalla);
@@ -423,7 +429,7 @@ export class PauseRuleHandler extends BaseToolHandler {
       }
 
       const result = await withToolTimeout(
-        async () => firewalla.pauseRule(ruleId, duration),
+        async () => firewalla.pauseRule(ruleId, duration, box),
         this.name
       );
 
@@ -545,18 +551,28 @@ export class ResumeRuleHandler extends BaseToolHandler {
         args?.rule_id,
         'rule_id'
       );
+      const boxValidation = ParameterValidator.validateRequiredString(
+        args?.box,
+        'box'
+      );
 
-      if (!ruleIdValidation.isValid) {
+      const validationResult = ParameterValidator.combineValidationResults([
+        ruleIdValidation,
+        boxValidation,
+      ]);
+
+      if (!validationResult.isValid) {
         return createErrorResponse(
           this.name,
           'Parameter validation failed',
           ErrorType.VALIDATION_ERROR,
           undefined,
-          ruleIdValidation.errors
+          validationResult.errors
         );
       }
 
       const ruleId = ruleIdValidation.sanitizedValue as string;
+      const box = boxValidation.sanitizedValue as string;
 
       // Check rule status before attempting to resume it
       const statusCheck = await checkRuleStatus(ruleId, this.name, firewalla);
@@ -599,7 +615,7 @@ export class ResumeRuleHandler extends BaseToolHandler {
       }
 
       const result = await withToolTimeout(
-        async () => firewalla.resumeRule(ruleId),
+        async () => firewalla.resumeRule(ruleId, box),
         this.name
       );
 

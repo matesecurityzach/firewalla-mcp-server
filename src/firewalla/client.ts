@@ -4765,7 +4765,8 @@ export class FirewallaClient {
   @optimizeResponse('rules')
   async pauseRule(
     ruleId: string,
-    durationMinutes: number = 60
+    durationMinutes: number = 60,
+    box?: string
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Enhanced input validation and sanitization
@@ -4773,10 +4774,13 @@ export class FirewallaClient {
 
       const validatedDuration = Math.max(1, Math.min(durationMinutes, 1440)); // 1 minute to 24 hours
 
-      // Use documented API endpoint with box parameter (like other operations)
+      // MSP API marks `box` as REQUIRED in the request body for /pause and
+      // /resume (see docs/firewalla-api-reference.md). Caller may pass it
+      // explicitly; otherwise we use the configured FIREWALLA_BOX_ID. If
+      // neither is set the MSP API rejects the call.
       const params = {
         duration: validatedDuration,
-        box: this.config.boxId, // Include box context like read operations
+        box: box ?? this.config.boxId,
       };
 
       const response = await this.request<{
@@ -4819,15 +4823,17 @@ export class FirewallaClient {
    */
   @optimizeResponse('rules')
   async resumeRule(
-    ruleId: string
+    ruleId: string,
+    box?: string
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Enhanced input validation and sanitization
       const validatedRuleId = validateRuleId(ruleId);
 
-      // Use documented API endpoint with box parameter (like other operations)
+      // MSP API requires `box` in the request body for /resume. Caller may
+      // pass it explicitly; otherwise we use the configured FIREWALLA_BOX_ID.
       const params = {
-        box: this.config.boxId, // Include box context like read operations
+        box: box ?? this.config.boxId,
       };
 
       const response = await this.request<{
