@@ -114,18 +114,16 @@ describe('Environment Variable Utilities', () => {
       expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('should enforce minimum value', () => {
+    it('should soft-fail below minimum and warn', () => {
       process.env.TEST_INT = '5';
-      expect(() => getOptionalEnvInt('TEST_INT', 10, 10)).toThrow(
-        'Environment variable TEST_INT must be at least 10, got: 5'
-      );
+      expect(getOptionalEnvInt('TEST_INT', 10, 10)).toBe(10);
+      expect(logger.warn).toHaveBeenCalled();
     });
 
-    it('should enforce maximum value', () => {
+    it('should soft-fail above maximum and warn', () => {
       process.env.TEST_INT = '50';
-      expect(() => getOptionalEnvInt('TEST_INT', 10, undefined, 40)).toThrow(
-        'Environment variable TEST_INT must be at most 40, got: 50'
-      );
+      expect(getOptionalEnvInt('TEST_INT', 10, undefined, 40)).toBe(10);
+      expect(logger.warn).toHaveBeenCalled();
     });
 
     it('should accept value within min/max range', () => {

@@ -34,14 +34,18 @@ export function getOptionalEnvVar(name: string, defaultValue: string): string {
 }
 
 /**
- * Safely parses an environment variable to an integer with validation
+ * Safely parses an environment variable to an integer with validation.
+ *
+ * Behavior on bad input: warn and fall back to the default rather than throw.
+ * Throwing at module import time produced restart loops in orchestrators —
+ * the security audit (H-11) flagged this as a single-env-var DoS surface.
  *
  * @param name - The environment variable name to parse
  * @param defaultValue - The default value to use if parsing fails
  * @param min - Optional minimum value for validation
  * @param max - Optional maximum value for validation
- * @returns The parsed integer value or the default value
- * @throws {Error} If the parsed value is outside the valid range
+ * @returns The parsed integer value, or the default value if the input was
+ *          unparseable or outside the soft bounds.
  */
 export function getOptionalEnvInt(
   name: string,
@@ -66,15 +70,25 @@ export function getOptionalEnvInt(
   }
 
   if (min !== undefined && parsed < min) {
-    throw new Error(
-      `Environment variable ${name} must be at least ${min}, got: ${parsed}`
-    );
+    logger.warn(`Environment variable below minimum, using default`, {
+      environment_variable: name,
+      invalid_value: parsed,
+      min,
+      default_value: defaultValue,
+      action: 'using_default',
+    });
+    return defaultValue;
   }
 
   if (max !== undefined && parsed > max) {
-    throw new Error(
-      `Environment variable ${name} must be at most ${max}, got: ${parsed}`
-    );
+    logger.warn(`Environment variable above maximum, using default`, {
+      environment_variable: name,
+      invalid_value: parsed,
+      max,
+      default_value: defaultValue,
+      action: 'using_default',
+    });
+    return defaultValue;
   }
 
   return parsed;

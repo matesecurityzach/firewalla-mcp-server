@@ -26,6 +26,15 @@ export function getProductionConfig(): ProductionConfig {
   const testMode =
     getOptionalEnvVar('MCP_TEST_MODE', 'false').toLowerCase() === 'true';
 
+  if (testMode && process.env.NODE_ENV === 'production') {
+    // See src/config/config.ts for rationale — prevent prod deployments
+    // from silently swapping real creds for the test dummy.
+    throw new Error(
+      'MCP_TEST_MODE=true is not permitted when NODE_ENV=production. ' +
+        'Unset MCP_TEST_MODE or set NODE_ENV to a non-production value.'
+    );
+  }
+
   const mspId = testMode
     ? 'test.firewalla.net'
     : getRequiredEnvVar('FIREWALLA_MSP_ID');

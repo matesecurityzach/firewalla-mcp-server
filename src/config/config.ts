@@ -60,8 +60,21 @@ export function getConfig(): FirewallaConfig {
     (process.env.MCP_TEST_MODE || 'false').toLowerCase() === 'true';
 
   if (testMode) {
-    // eslint-disable-next-line no-console
-    console.log('Running in test mode - using dummy credentials');
+    // Refuse to start in test mode under NODE_ENV=production. A
+    // misconfigured deployment that leaks MCP_TEST_MODE=true into prod
+    // would otherwise silently swap real credentials for dummies and
+    // send requests to test.firewalla.net.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'MCP_TEST_MODE=true is not permitted when NODE_ENV=production. ' +
+          'Unset MCP_TEST_MODE or set NODE_ENV to a non-production value.'
+      );
+    }
+    // Write to stderr — under stdio transport, stdout is the JSON-RPC
+    // channel and console.log would corrupt it.
+    process.stderr.write(
+      'Running in test mode - using dummy credentials\n'
+    );
     return getTestConfig();
   }
 
