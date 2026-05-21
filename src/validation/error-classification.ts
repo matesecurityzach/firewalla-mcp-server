@@ -4,6 +4,7 @@
  */
 
 import { ErrorType, createErrorResponse } from './error-handler.js';
+import { logger } from '../monitoring/logger.js';
 
 /**
  * Common error patterns and their classifications
@@ -322,7 +323,15 @@ export class ErrorClassifier {
   }
 
   /**
-   * Create a standardized error response with proper classification
+   * Create a standardized error response with proper classification.
+   *
+   * Security note (audit M-7): the user-facing `errorDetails` deliberately
+   * omits `original_error` and `parameters`. Those fields can echo
+   * upstream MSP error messages and user-supplied arguments straight back
+   * into the agent's context window — which is itself an untrusted-egress
+   * sink (the agent may relay them to a downstream LLM). They are still
+   * captured in a structured `logger.debug` call for operator-side
+   * troubleshooting.
    */
   static createStandardizedErrorResponse(
     error: Error | string,
@@ -330,22 +339,35 @@ export class ErrorClassifier {
   ) {
     const errorType = this.classifyError(error, context);
     const errorMessage = typeof error === 'string' ? error : error.message;
-    
-    // Create enhanced error details
-    const errorDetails = {
+
+    // Operator-side diagnostic — full detail, will be redacted by the
+    // logger's recursive sanitizer before reaching stderr.
+    logger.debug('Standardized error created', {
       tool: context.toolName,
       operation: context.operation,
       error_type: errorType,
       original_error: errorMessage,
-      timestamp: new Date().toISOString(),
       parameters: context.parameters,
       context: context.context,
+    });
+
+    // User-facing details — minimal. No original error message, no
+    // parameters, no context echoed back.
+    const errorDetails = {
+      tool: context.toolName,
+      operation: context.operation,
+      error_type: errorType,
+      timestamp: new Date().toISOString(),
       troubleshooting: TROUBLESHOOTING_GUIDES[errorType],
       documentation: DOCUMENTATION_LINKS[errorType],
     };
 
     // Generate user-friendly error message
-    const userMessage = this.generateUserFriendlyMessage(errorType, errorMessage, context);
+    const userMessage = this.generateUserFriendlyMessage(
+      errorType,
+      errorMessage,
+      context
+    );
 
     return createErrorResponse(
       context.toolName,
@@ -355,7 +377,6 @@ export class ErrorClassifier {
       undefined, // validation_errors - will be set separately if needed
       {
         endpoint: context.operation,
-        parameters: context.parameters,
         userAgent: 'Firewalla MCP Server',
       }
     );

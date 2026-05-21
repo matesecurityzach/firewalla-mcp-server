@@ -165,30 +165,59 @@ export class FirewallaClient {
    * @returns {void}
    */
   private setupInterceptors(): void {
+    // Strip the query string before logging — query params can echo user input
+    // back into stderr (which under stdio is operator-visible) and box-scoping
+    // qualifiers we don't want in shareable logs.
+    const safePath = (url: string | undefined): string | undefined =>
+      url ? url.split('?')[0] : undefined;
+
+    // Remove the Authorization (and similar) headers from an axios error's
+    // request config so it can't be exfiltrated through any downstream
+    // `JSON.stringify(error)` / `details: { error }` future-bug pattern.
+    // The token is the crown jewel; this defang runs unconditionally on
+    // every error before any further handling.
+    const defangAxiosError = (err: unknown): void => {
+      const e = err as { config?: { headers?: Record<string, unknown> } };
+      const headers = e?.config?.headers;
+      if (headers && typeof headers === 'object') {
+        delete headers.Authorization;
+        delete headers.authorization;
+        delete headers.Cookie;
+        delete headers.cookie;
+      }
+    };
+
     this.api.interceptors.request.use(
-      config => {
-        process.stderr.write(
-          `API Request: ${config.method?.toUpperCase()} ${config.url}\\n`
-        );
-        return config;
+      requestConfig => {
+        logger.debug('API request', {
+          method: requestConfig.method?.toUpperCase(),
+          path: safePath(requestConfig.url),
+        });
+        return requestConfig;
       },
       async error => {
-        process.stderr.write(`API Request Error: ${error.message}\\n`);
+        defangAxiosError(error);
+        logger.debug('API request error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
         return Promise.reject(error);
       }
     );
 
     this.api.interceptors.response.use(
       response => {
-        process.stderr.write(
-          `API Response: ${response.status} ${response.config.url}\\n`
-        );
+        logger.debug('API response', {
+          status: response.status,
+          path: safePath(response.config.url),
+        });
         return response;
       },
       async error => {
-        process.stderr.write(
-          `API Response Error: ${error.response?.status} ${error.message}\\n`
-        );
+        defangAxiosError(error);
+        logger.debug('API response error', {
+          status: error.response?.status,
+          message: error instanceof Error ? error.message : String(error),
+        });
 
         if (error.response?.status === 401) {
           throw new Error(
@@ -441,19 +470,37 @@ export class FirewallaClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         const statusText = error.response?.statusText;
-        const url = error.config?.url;
+        // Strip query string before any log or error message — query
+        // params can carry box.id and other identifiers we don't want
+        // ending up in agent-facing responses or shareable logs.
+        const safeUrl = error.config?.url
+          ? error.config.url.split('?')[0]
+          : undefined;
+        const responseData = error.response?.data;
+        const responseBodySize =
+          typeof responseData === 'string'
+            ? responseData.length
+            : responseData !== undefined
+              ? JSON.stringify(responseData).length
+              : 0;
 
         let errorMessage = `API Error (${status || 'unknown'}): ${error.message}`;
 
         if (status) {
           switch (status) {
             case 400:
-              logger.debug('API 400 Error Details:', {
-                url,
-                params: filteredParams,
-                response: error.response?.data,
+              // Do NOT include the upstream response body — MSP error
+              // payloads can echo request paths and free-form
+              // diagnostic strings that leak into operator-visible
+              // logs when LOG_LEVEL=debug. Log just enough to debug.
+              logger.debug('API 400 Error Details', {
+                path: safeUrl,
+                paramKeys: filteredParams
+                  ? Object.keys(filteredParams)
+                  : [],
+                responseBodySize,
               });
-              errorMessage = `Bad Request: Invalid parameters sent to ${url}`;
+              errorMessage = `Bad Request: Invalid parameters sent to ${safeUrl}`;
               break;
             case 401:
               errorMessage =
@@ -464,7 +511,7 @@ export class FirewallaClient {
                 'Access denied: Insufficient permissions for this operation';
               break;
             case 404:
-              errorMessage = `Resource not found: ${url} does not exist`;
+              errorMessage = `Resource not found: ${safeUrl} does not exist`;
               break;
             case 429:
               errorMessage =
