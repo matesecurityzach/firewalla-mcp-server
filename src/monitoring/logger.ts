@@ -204,14 +204,14 @@ export class StructuredLogger {
     }
 
     if (Array.isArray(input)) {
-      if (seen.has(input)) return '[cycle]';
+      if (seen.has(input)) {return '[cycle]';}
       seen.add(input);
       return input.map(el => this.deepRedact(el, '', depth + 1, seen));
     }
 
     if (typeof input === 'object') {
       const obj = input as Record<string, unknown>;
-      if (seen.has(obj)) return '[cycle]';
+      if (seen.has(obj)) {return '[cycle]';}
       seen.add(obj);
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(obj)) {
@@ -235,9 +235,9 @@ export class StructuredLogger {
    * still distinguishable in logs without leaking content.
    */
   private redactValue(value: unknown): string {
-    if (value === null || value === undefined) return '[redacted]';
+    if (value === null || value === undefined) {return '[redacted]';}
     const str = typeof value === 'string' ? value : JSON.stringify(value);
-    if (str.length <= 8) return '*'.repeat(Math.max(1, str.length));
+    if (str.length <= 8) {return '*'.repeat(Math.max(1, str.length));}
     const digest = createHash('sha256').update(str).digest('hex').slice(0, 12);
     return `[redacted:sha256:${digest}]`;
   }

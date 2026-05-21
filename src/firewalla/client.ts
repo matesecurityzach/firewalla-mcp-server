@@ -214,7 +214,7 @@ export class FirewallaClient {
         for (const key of Object.keys(headers)) {
           const lower = key.toLowerCase();
           if (SENSITIVE_HEADER_SUBSTRINGS.some(s => lower.includes(s))) {
-            delete (headers as Record<string, unknown>)[key];
+            delete (headers)[key];
           }
         }
       }
@@ -3688,7 +3688,7 @@ export class FirewallaClient {
                     .split('mac_vendor:')[1]
                     ?.split(' ')[0]
                     ?.toLowerCase();
-                  if (!vendor) return false;
+                  if (!vendor) {return false;}
                   return macVendor.includes(vendor);
                 }
                 if (trimmedPart.includes('name:')) {
@@ -3697,7 +3697,7 @@ export class FirewallaClient {
                     ?.split(' ')[0]
                     ?.toLowerCase()
                     .replace(/\*/g, '');
-                  if (!nameSearch) return false;
+                  if (!nameSearch) {return false;}
                   return name.includes(nameSearch);
                 }
                 if (trimmedPart.includes('online:')) {
@@ -3733,7 +3733,7 @@ export class FirewallaClient {
                 .split('mac_vendor:')[1]
                 ?.split(' ')[0]
                 ?.toLowerCase();
-              if (!vendor) return false;
+              if (!vendor) {return false;}
               return macVendor.includes(vendor);
             }
             if (query.includes('name:')) {
@@ -3742,7 +3742,7 @@ export class FirewallaClient {
                 ?.split(' ')[0]
                 ?.toLowerCase()
                 .replace(/\*/g, '');
-              if (!nameSearch) return false;
+              if (!nameSearch) {return false;}
               return name.includes(nameSearch);
             }
             if (query.includes('online:')) {

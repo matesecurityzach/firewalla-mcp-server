@@ -36,7 +36,7 @@ import {
   ListToolsRequestSchema,
   isInitializeRequest,
 } from '@modelcontextprotocol/sdk/types.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   createServer,
   type IncomingMessage,
@@ -49,7 +49,6 @@ import { setupResources } from './resources/index.js';
 import { setupPrompts } from './prompts/index.js';
 import { logger } from './monitoring/logger.js';
 import { SecurityManager } from './config/security.js';
-import { timingSafeEqual } from 'node:crypto';
 
 /**
  * UUID v4 validation regex pattern
@@ -1123,10 +1122,10 @@ export class FirewallaMCPServer {
 
     // Map to store transports by session ID. We also keep the per-session
     // Server alongside the transport so it can be torn down together.
-    type Session = {
+    interface Session {
       transport: StreamableHTTPServerTransport;
       server: Server;
-    };
+    }
     const sessions = new Map<string, Session>();
 
     // Helper to apply security headers + JSON content-type to a response.
@@ -1256,7 +1255,7 @@ export class FirewallaMCPServer {
         let size = 0;
         let settled = false;
         const settle = (fn: () => void): void => {
-          if (settled) return;
+          if (settled) {return;}
           settled = true;
           fn();
         };
@@ -1337,7 +1336,7 @@ export class FirewallaMCPServer {
 
             if (sessionId && sessions.has(sessionId)) {
               // Reuse existing transport for this session
-              transport = sessions.get(sessionId)!.transport;
+              ({ transport } = sessions.get(sessionId)!);
             } else if (!sessionId && isInitializeRequest(parsedBody)) {
               // New initialization request — create new transport AND a
               // fresh Server instance scoped to this session. The fresh

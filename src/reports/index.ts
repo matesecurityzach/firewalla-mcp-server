@@ -47,7 +47,7 @@ import { unixToISOString, safeUnixToISOString } from '../utils/timestamp.js';
 const TRUNCATION_SUFFIX = '…[truncated]';
 
 export function safeNarrative(value: unknown, maxLen = 400): string {
-  if (value === null || value === undefined) return '';
+  if (value === null || value === undefined) {return '';}
   let s = typeof value === 'string' ? value : String(value);
   // eslint-disable-next-line no-control-regex
   s = s.replace(/[\u0000-\u001F\u007F]/g, ' ');
