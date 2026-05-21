@@ -91,11 +91,10 @@
     "test:regression:all": "npm run test:regression:wave0 && npm run test:regression:wave1 && npm run test:regression:wave2 && npm run test:regression:contracts && npm run test:regression:performance"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.13.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/geoip-lite": "^1.4.4",
     "@types/node": "^24.0.3",
-    "axios": "^1.10.0",
-    "axios-retry": "^4.5.0",
+    "axios": "^1.16.1",
     "dotenv": "^16.5.0",
     "geoip-lite": "^1.4.10",
     "zod": "^3.25.75"

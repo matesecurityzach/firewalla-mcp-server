@@ -122,16 +122,16 @@ export function withUnifiedResponse<
     try {
       const result = await handler(...args);
 
+      const firstContent = result.content[0];
+      const firstText =
+        firstContent && firstContent.type === 'text' ? firstContent.text : '';
+
       // If it's already an error, convert to unified error format
       if (result.isError === true) {
-        const errorText = result.content[0]?.text || 'Unknown error';
+        const errorText = firstText || 'Unknown error';
         let errorData: any;
         try {
-          if (typeof errorText === 'string') {
-            errorData = JSON.parse(errorText);
-          } else {
-            errorData = { message: 'Unknown error' };
-          }
+          errorData = JSON.parse(errorText);
         } catch {
           errorData = { message: errorText };
         }
@@ -148,14 +148,9 @@ export function withUnifiedResponse<
       // Convert successful response to unified format
       let data: any;
       try {
-        const textContent = result.content[0]?.text || '{}';
-        if (typeof textContent === 'string') {
-          data = JSON.parse(textContent);
-        } else {
-          data = textContent || {};
-        }
+        data = JSON.parse(firstText || '{}');
       } catch {
-        data = result.content[0]?.text || {};
+        data = firstText || {};
       }
 
       const executionTimeMs = Date.now() - startTime;
