@@ -37,15 +37,15 @@ import { unixToISOString, safeUnixToISOString } from '../utils/timestamp.js';
  *    reviewers).
  *  - Strip backticks; neutralize triple-fence escapes so an attacker can't
  *    close the fenced data block.
- *  - Strip the literal token "system:" / "user:" / "assistant:" /
- *    "ignore previous" patterns at most-once per string — best-effort
- *    only; deeper neutralization happens in the fenced delimiter pattern.
  *  - Truncate with an explicit suffix so callers see when truncation
- *    happened.
+ *    happened. The emitted string is always <= maxLen — the truncation
+ *    suffix is counted against the cap rather than appended after it.
  *
  * Callers are expected to wrap blocks of untrusted fields in a fenced
  * section with an anti-injection preamble (see each builder).
  */
+const TRUNCATION_SUFFIX = '…[truncated]';
+
 export function safeNarrative(value: unknown, maxLen = 400): string {
   if (value === null || value === undefined) return '';
   let s = typeof value === 'string' ? value : String(value);
@@ -55,7 +55,8 @@ export function safeNarrative(value: unknown, maxLen = 400): string {
   // space-separated backticks; standalone backticks are stripped.
   s = s.replace(/```/g, '` ` `').replace(/`/g, '');
   if (s.length > maxLen) {
-    s = `${s.slice(0, maxLen)}…[truncated]`;
+    const room = Math.max(0, maxLen - TRUNCATION_SUFFIX.length);
+    s = `${s.slice(0, room)}${TRUNCATION_SUFFIX}`;
   }
   return s.trim();
 }

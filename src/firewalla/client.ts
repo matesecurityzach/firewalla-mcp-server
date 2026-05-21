@@ -187,19 +187,36 @@ export class FirewallaClient {
     const safePath = (url: string | undefined): string | undefined =>
       url ? url.split('?')[0] : undefined;
 
-    // Remove the Authorization (and similar) headers from an axios error's
-    // request config so it can't be exfiltrated through any downstream
-    // `JSON.stringify(error)` / `details: { error }` future-bug pattern.
-    // The token is the crown jewel; this defang runs unconditionally on
-    // every error before any further handling.
+    // Remove sensitive headers from an axios error's request config so they
+    // can't be exfiltrated through any downstream `JSON.stringify(error)` /
+    // `details: { error }` future-bug pattern. The MSP token is the crown
+    // jewel; this defang runs unconditionally on every error before any
+    // further handling.
+    //
+    // The header denylist mirrors the substring set used by the structured
+    // logger in src/monitoring/logger.ts (SENSITIVE_KEY_PARTS) so a single
+    // header-naming convention is enforced everywhere.
+    const SENSITIVE_HEADER_SUBSTRINGS = [
+      'authorization',
+      'auth',
+      'bearer',
+      'cookie',
+      'token',
+      'api-key',
+      'apikey',
+      'x-auth-token',
+      'credential',
+    ];
     const defangAxiosError = (err: unknown): void => {
       const e = err as { config?: { headers?: Record<string, unknown> } };
       const headers = e?.config?.headers;
       if (headers && typeof headers === 'object') {
-        delete headers.Authorization;
-        delete headers.authorization;
-        delete headers.Cookie;
-        delete headers.cookie;
+        for (const key of Object.keys(headers)) {
+          const lower = key.toLowerCase();
+          if (SENSITIVE_HEADER_SUBSTRINGS.some(s => lower.includes(s))) {
+            delete (headers as Record<string, unknown>)[key];
+          }
+        }
       }
     };
 
@@ -888,9 +905,11 @@ export class FirewallaClient {
         'asc'
       );
 
-      process.stderr.write(
-        `Device pagination: ${paginatedResult.results.length}/${paginatedResult.total_count} (${Date.now() - startTime}ms)\n`
-      );
+      logger.debug('Device pagination', {
+        returned: paginatedResult.results.length,
+        total: paginatedResult.total_count,
+        duration_ms: Date.now() - startTime,
+      });
 
       return {
         count: paginatedResult.results.length,
@@ -2840,15 +2859,17 @@ export class FirewallaClient {
           : options.time_range.end;
 
       const timeQuery = `ts:${startTs}-${endTs}`;
+      // Paren-wrap the user query (audit M-1) so an `OR` at the end can't
+      // escape the time filter via operator precedence.
       params.query = params.query
-        ? `${params.query} AND ${timeQuery}`
+        ? `(${params.query}) AND ${timeQuery}`
         : timeQuery;
     }
 
     // Add blocked flow filter if needed
     if (options.include_resolved === false) {
       params.query = params.query
-        ? `${params.query} AND block:false`
+        ? `(${params.query}) AND block:false`
         : 'block:false';
     }
 
@@ -3607,10 +3628,12 @@ export class FirewallaClient {
         params.aggregate = true;
       }
 
-      // Enhanced filter application with validation
+      // Enhanced filter application with validation. Paren-wrap user
+      // query (audit M-1) so an `OR` at the end can't escape the
+      // online:true filter via operator precedence.
       if (options.include_resolved === false) {
         params.query = params.query
-          ? `${params.query} AND online:true`
+          ? `(${params.query}) AND online:true`
           : 'online:true';
       }
 
@@ -3946,6 +3969,15 @@ export class FirewallaClient {
           (cat): cat is string =>
             typeof cat === 'string' && DSL_SAFE_IDENT.test(cat.trim())
         );
+        if (validCategories.length !== options.categories.length) {
+          // Some entries failed the DSL-safe whitelist. Don't fail the
+          // whole call (the surviving filters still apply) but surface
+          // the drop so operators see what got removed.
+          logger.warn('searchTargetLists dropped category values failing whitelist', {
+            dropped: options.categories.length - validCategories.length,
+            total: options.categories.length,
+          });
+        }
         if (validCategories.length > 0) {
           const categoryFilter = `category:(${validCategories
             .map(c => c.trim())
@@ -3961,6 +3993,12 @@ export class FirewallaClient {
           (owner): owner is string =>
             typeof owner === 'string' && DSL_SAFE_IDENT.test(owner.trim())
         );
+        if (validOwners.length !== options.owners.length) {
+          logger.warn('searchTargetLists dropped owner values failing whitelist', {
+            dropped: options.owners.length - validOwners.length,
+            total: options.owners.length,
+          });
+        }
         if (validOwners.length > 0) {
           const ownerFilter = `owner:(${validOwners
             .map(o => o.trim())
@@ -4988,8 +5026,13 @@ export class FirewallaClient {
   }
 
   /**
-   * Public method for making raw API calls
-   * Used by management tools for bulk operations
+   * Raw API-call escape hatch used by bulk-operation tools.
+   *
+   * @internal
+   * Bypasses the parameter-filtering, validation, and caching that runs
+   * inside `request<T>()`. Do not expose this method through any tool
+   * handler that accepts user-controlled `method` or `endpoint` values —
+   * the audit (L-7) flagged it as a footgun for the same reason.
    */
   async makeApiCall(
     method: 'get' | 'post' | 'patch' | 'delete',

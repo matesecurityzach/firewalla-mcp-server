@@ -1238,11 +1238,15 @@ export class FirewallaMCPServer {
       const MAX_BODY_SIZE = 1024 * 1024; // 1 MiB
       const REQUEST_TIMEOUT_MS = 30_000;
 
-      const declaredLen = parseInt(
-        req.headers['content-length'] ?? '0',
-        10
-      );
-      if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_SIZE) {
+      // Parse Content-Length strictly: parseInt accepts trailing junk
+      // ('1abc' -> 1) and hex prefixes, which would defeat the precheck.
+      // The streaming guard below still enforces the cap byte-by-byte;
+      // this is defense in depth.
+      const clRaw = req.headers['content-length'];
+      const declaredLen = clRaw !== undefined && /^\d+$/.test(clRaw)
+        ? Number(clRaw)
+        : 0;
+      if (declaredLen > MAX_BODY_SIZE) {
         req.destroy();
         throw new Error('Request body too large (max 1MB)');
       }

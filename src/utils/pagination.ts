@@ -7,6 +7,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { logger } from '../monitoring/logger.js';
 import { config } from '../config/config.js';
 import { SafeAccess } from '../validation/error-handler.js';
 
@@ -282,7 +283,11 @@ export function paginateArray<T extends object>(
 ): PaginatedResult<T> {
   let offset = 0;
 
-  // Decode cursor if provided
+  // Decode cursor if provided. A signature mismatch (or any decode
+  // failure) silently resets to offset 0 — this preserves the
+  // pre-signing API contract, but we log a warn so operators can spot
+  // forgery attempts or cross-process replay (cursors are signed by a
+  // per-process key).
   if (cursor) {
     try {
       const cursorData = decodeCursor(cursor);
@@ -292,8 +297,12 @@ export function paginateArray<T extends object>(
       if (cursorPageSize === page_size) {
         page_size = cursorPageSize;
       }
-    } catch {
-      // Invalid cursor, start from beginning
+    } catch (err) {
+      // Invalid cursor (forged, expired across restart, or malformed) —
+      // reset to offset 0 and surface the reason at warn level.
+      logger.warn('Cursor decode failed, resetting to offset 0', {
+        reason: err instanceof Error ? err.message : String(err),
+      });
       offset = 0;
     }
   }
