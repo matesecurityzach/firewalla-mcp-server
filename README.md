@@ -1,11 +1,8 @@
 # Firewalla MCP Server
 
-[![npm version](https://badge.fury.io/js/firewalla-mcp-server.svg)](https://www.npmjs.com/package/firewalla-mcp-server)
-<a href="https://glama.ai/mcp/servers/@amittell/firewalla-mcp-server">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@amittell/firewalla-mcp-server/badge" alt="Glama MCP Server" />
-</a>
-
 A Model Context Protocol (MCP) server that provides real-time access to Firewalla firewall data through 37 tools, designed for use by AI security-investigation agents and compatible with any MCP client.
+
+> **Fork notice:** This repository is forked from [amittell/firewalla-mcp-server](https://github.com/amittell/firewalla-mcp-server) and has diverged. Changes in this fork focus on security hardening of the transport, validation, and logging layers (see recent commits). This fork is **not published to npm or Docker Hub** — install from source as described below.
 
 ## Why Firewalla MCP Server?
 
@@ -26,10 +23,12 @@ A Model Context Protocol (MCP) server that provides real-time access to Firewall
 
 ## Client Setup Guides
 
+> The per-client guides under [docs/clients/](docs/clients/) were written against the upstream npm package. For this fork, replace any `npx firewalla-mcp-server` invocation with `node /absolute/path/to/firewalla-mcp-server/dist/server.js` (see [Connect Claude Desktop](#4-connect-claude-desktop) below).
+
 | Client | Quick Start | Full Guide |
 |--------|-------------|------------|
-| **Claude Desktop** | `npm i -g firewalla-mcp-server` → Configure MCP | [Setup Guide](docs/clients/claude-desktop.md) |
-| **Claude Code** | `npm i -g firewalla-mcp-server` → CLI integration | [Setup Guide](docs/clients/claude-code.md) |
+| **Claude Desktop** | Build from source → point `command` at `node dist/server.js` | [Setup Guide](docs/clients/claude-desktop.md) |
+| **Claude Code** | Build from source → register via `claude mcp add` | [Setup Guide](docs/clients/claude-code.md) |
 | **VS Code** | Install MCP extension → Configure server | [Setup Guide](docs/clients/vscode.md) |
 | **Cursor** | Install Claude Code → VSIX method | [Setup Guide](docs/clients/cursor.md) |
 | **Roocode** | Install MCP support → Configure server | [Setup Guide](docs/clients/roocode.md) |
@@ -52,94 +51,39 @@ The MCP server acts as a bridge between Claude and your Firewalla firewall, tran
 
 ## Quick Start
 
-### 1. Installation
+### 1. Installation (from source)
 
-### Option A: Install from npm (Recommended)
+This fork is distributed as source only.
+
 ```bash
-# Install globally
-npm install -g firewalla-mcp-server
-
-# Or install locally in your project
-npm install firewalla-mcp-server
-```
-
-### Option B: Use Docker
-
-> **Warning: Not for production use – secrets visible in process list**
-
-The examples below pass credentials directly in the command line, which exposes them to process listing and shell history. For production use, consider these secure alternatives:
-- Use `--env-file` with a `.env` file: `docker run --env-file .env ...`
-- Set environment variables in your shell before running Docker
-- Use Docker secrets for orchestration environments
-
-**Stdio Transport (Default - for Claude Desktop integration):**
-```bash
-# Using Docker Hub image
-docker run -it --rm \
-  -e FIREWALLA_MSP_TOKEN=your_token \
-  -e FIREWALLA_MSP_ID=yourdomain.firewalla.net \
-  -e FIREWALLA_BOX_ID=your_box_gid \
-  amittell/firewalla-mcp-server
-
-# Or build locally
-docker build -t firewalla-mcp-server .
-docker run -it --rm \
-  -e FIREWALLA_MSP_TOKEN=your_token \
-  -e FIREWALLA_MSP_ID=yourdomain.firewalla.net \
-  -e FIREWALLA_BOX_ID=your_box_gid \
-  firewalla-mcp-server
-
-# Recommended: Using env file (more secure)
-docker run -it --rm --env-file .env amittell/firewalla-mcp-server
-```
-
-**HTTP Transport (for standalone Docker containers and external access):**
-```bash
-# Run with HTTP transport on port 3000
-docker run -d --name firewalla-mcp \
-  -p 3000:3000 \
-  -e MCP_TRANSPORT=http \
-  -e MCP_HTTP_PORT=3000 \
-  -e FIREWALLA_MSP_TOKEN=your_token \
-  -e FIREWALLA_MSP_ID=yourdomain.firewalla.net \
-  -e FIREWALLA_BOX_ID=your_box_gid \
-  amittell/firewalla-mcp-server
-
-# The server will be accessible at http://localhost:3000/mcp
-
-# Using env file (recommended)
-docker run -d --name firewalla-mcp \
-  -p 3000:3000 \
-  --env-file .env \
-  amittell/firewalla-mcp-server
-
-# For docker-compose
-cat > docker-compose.yml << EOF
-version: '3.8'
-services:
-  firewalla-mcp:
-    image: amittell/firewalla-mcp-server
-    ports:
-      - "3000:3000"
-    environment:
-      - MCP_TRANSPORT=http
-      - MCP_HTTP_PORT=3000
-      - FIREWALLA_MSP_TOKEN=\${FIREWALLA_MSP_TOKEN}
-      - FIREWALLA_MSP_ID=\${FIREWALLA_MSP_ID}
-      - FIREWALLA_BOX_ID=\${FIREWALLA_BOX_ID}
-    restart: unless-stopped
-EOF
-
-docker-compose up -d
-```
-
-### Option C: Install from source
-```bash
-git clone https://github.com/amittell/firewalla-mcp-server.git
+git clone https://github.com/matesecurityzach/firewalla-mcp-server.git
 cd firewalla-mcp-server
 npm install
 npm run build
 ```
+
+After `npm run build`, the entry point is `dist/server.js`. Take note of the absolute path — you'll reference it from your MCP client config.
+
+#### Optional: build a local Docker image
+
+This fork is not published to a registry, but the included `Dockerfile` still works. Build and run locally:
+
+```bash
+docker build -t firewalla-mcp-server .
+
+# Stdio (for Claude Desktop), reading credentials from a .env file
+docker run -it --rm --env-file .env firewalla-mcp-server
+
+# HTTP transport on port 3000
+docker run -d --name firewalla-mcp \
+  -p 3000:3000 \
+  --env-file .env \
+  -e MCP_TRANSPORT=http \
+  -e MCP_HTTP_PORT=3000 \
+  firewalla-mcp-server
+```
+
+> **Warning:** Passing `-e FIREWALLA_MSP_TOKEN=...` directly on the command line exposes the token to process listings and shell history. Prefer `--env-file .env` or Docker secrets.
 
 ### 2. Configuration
 
@@ -197,43 +141,8 @@ npm run mcp:start
 
 ### 4. Connect Claude Desktop
 
-Add this configuration to your Claude Desktop `claude_desktop_config.json`:
+Add this configuration to your Claude Desktop `claude_desktop_config.json`, replacing `/full/path/to/firewalla-mcp-server` with the absolute path to your clone:
 
-#### If installed via npm
-```json
-{
-  "mcpServers": {
-    "firewalla": {
-      "command": "npx",
-      "args": ["firewalla-mcp-server"],
-      "env": {
-        "FIREWALLA_MSP_TOKEN": "your_msp_access_token_here",
-        "FIREWALLA_MSP_ID": "yourdomain.firewalla.net",
-        "FIREWALLA_BOX_ID": "your_box_gid_here"
-      }
-    }
-  }
-}
-```
-
-#### If using Docker
-```json
-{
-  "mcpServers": {
-    "firewalla": {
-      "command": "docker",
-      "args": ["run", "-i", "--rm", 
-        "-e", "FIREWALLA_MSP_TOKEN=your_token",
-        "-e", "FIREWALLA_MSP_ID=yourdomain.firewalla.net",
-        "-e", "FIREWALLA_BOX_ID=your_box_gid",
-        "amittell/firewalla-mcp-server"
-      ]
-    }
-  }
-}
-```
-
-#### If installed from source
 ```json
 {
   "mcpServers": {
@@ -250,10 +159,34 @@ Add this configuration to your Claude Desktop `claude_desktop_config.json`:
 }
 ```
 
+If you built a local Docker image instead, point `command` at `docker` with `--env-file` so the token never appears in the config file:
+
+```json
+{
+  "mcpServers": {
+    "firewalla": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--env-file", "/full/path/to/.env", "firewalla-mcp-server"]
+    }
+  }
+}
+```
 
 **Config file locations:**
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+### Connect Claude Code
+
+From the cloned directory:
+
+```bash
+claude mcp add firewalla \
+  -e FIREWALLA_MSP_TOKEN=your_token \
+  -e FIREWALLA_MSP_ID=yourdomain.firewalla.net \
+  -e FIREWALLA_BOX_ID=your_box_gid \
+  -- node "$(pwd)/dist/server.js"
+```
 
 ### 5. Next Steps
 
@@ -414,24 +347,17 @@ npm run lint:fix     # Fix ESLint issues
 
 ### MCP Execution Methods
 
-**Why `npx` for MCP servers?**
-- **Version Management**: Always uses the correct/latest version
-- **Dependency Resolution**: Handles package dependencies automatically  
-- **No global installation required**: Works without global installation
-- **MCP Standard**: Follows Model Context Protocol conventions
-- **Reliable**: Works consistently across different environments
+Because this fork is source-only, the two supported execution paths are:
 
-**Alternative execution methods:**
 ```bash
-# Development (from source)
+# Development: rebuild then run (picks up source changes)
 npm run mcp:start
 
-# Production (npm installed)
-npx firewalla-mcp-server
-
-# Direct execution (from source after build)
+# Production: run the compiled entry point directly
 node dist/server.js
 ```
+
+The `node dist/server.js` form is what MCP client configs (Claude Desktop, Claude Code, VS Code, Cursor, etc.) should point at.
 
 ### Project Structure
 
@@ -531,7 +457,14 @@ For more detailed troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ## What's New
 
-**Agent-first redesign:**
+**Fork — security hardening:**
+- HTTP transport: loopback bind by default, Host/Origin allowlist, optional bearer-token gate, per-session `Server` instances.
+- Signed pagination cursors; tightened path, query, and protocol-path validation.
+- Secret redaction in logs; defanged axios error payloads to avoid leaking response bodies / headers.
+- `MCP_TEST_MODE` hardened so dummy credentials cannot accidentally reach production calls; env-var bound failures soften to warnings where safe.
+- Dependency hygiene: bumped `axios` and `@modelcontextprotocol/sdk`, removed unused `axios-retry`.
+
+**Agent-first redesign (inherited from upstream):**
 - 37 tools (was 28) including 4 investigation composite tools and 5 report composite tools.
 - New MCP reference resources: `firewalla://reference/alarm-types`, `firewalla://reference/categories`, `firewalla://reference/query-syntax`, and `firewalla://boxes`.
 - ListResources and ListPrompts handlers added so agents can discover the surface.
@@ -555,16 +488,12 @@ For issues and questions:
 
 ## GitHub Repository
 
-**Repository**: [https://github.com/amittell/firewalla-mcp-server](https://github.com/amittell/firewalla-mcp-server)
+**Fork**: [https://github.com/matesecurityzach/firewalla-mcp-server](https://github.com/matesecurityzach/firewalla-mcp-server)
+**Upstream**: [https://github.com/amittell/firewalla-mcp-server](https://github.com/amittell/firewalla-mcp-server)
 
 ### Quick Links
-- [Issues](https://github.com/amittell/firewalla-mcp-server/issues)
-- [Pull Requests](https://github.com/amittell/firewalla-mcp-server/pulls)
-- [Actions](https://github.com/amittell/firewalla-mcp-server/actions)
-- [Security](https://github.com/amittell/firewalla-mcp-server/security)
-
-### Repository Stats
-[![GitHub issues](https://img.shields.io/github/issues/amittell/firewalla-mcp-server)](https://github.com/amittell/firewalla-mcp-server/issues)
-[![GitHub stars](https://img.shields.io/github/stars/amittell/firewalla-mcp-server)](https://github.com/amittell/firewalla-mcp-server/stargazers)
-[![GitHub license](https://img.shields.io/github/license/amittell/firewalla-mcp-server)](https://github.com/amittell/firewalla-mcp-server/blob/main/LICENSE)
+- [Issues](https://github.com/matesecurityzach/firewalla-mcp-server/issues)
+- [Pull Requests](https://github.com/matesecurityzach/firewalla-mcp-server/pulls)
+- [Actions](https://github.com/matesecurityzach/firewalla-mcp-server/actions)
+- [Security](https://github.com/matesecurityzach/firewalla-mcp-server/security)
 
