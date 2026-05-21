@@ -6,6 +6,7 @@
  * to provide a unified, comprehensive pagination solution.
  */
 
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { config } from '../config/config.js';
 import { SafeAccess } from '../validation/error-handler.js';
 
@@ -146,16 +147,45 @@ export function getDefaultPageSize(requestedSize?: number): number {
 }
 
 /**
- * Encodes a `CursorData` object into a base64 string for use as a pagination cursor.
+ * Per-process HMAC signing key for pagination cursors. Generated once at
+ * module load and never serialized — cursors signed by one process can't be
+ * forged or replayed by another. Re-binding via tests is handled by the
+ * `cursorSigningKey` getter.
+ *
+ * Security context (audit H-4): previously cursors were unsigned
+ * base64-JSON and any client could fabricate one with arbitrary
+ * `offset`/`total_items` values. Signing with HMAC-SHA256 over the body
+ * and a `timingSafeEqual` compare on decode prevents forgery.
+ */
+let cursorSigningKey: Buffer = randomBytes(32);
+
+/**
+ * Test-only hook to re-bind the signing key. Production code should never
+ * call this — the default per-process random key is what gives forgery
+ * resistance.
+ */
+export function __resetCursorSigningKeyForTests(): void {
+  cursorSigningKey = randomBytes(32);
+}
+
+const CURSOR_MAX_OFFSET = 10_000_000;
+
+/**
+ * Encodes a `CursorData` object into a signed cursor for use as a pagination
+ * cursor. Format: `<base64url(JSON)>.<base64url(HMAC-SHA256)>`.
  *
  * @param data - The cursor data to encode
- * @returns The base64-encoded string representing the cursor
+ * @returns The signed cursor string
  * @throws If the cursor data cannot be serialized or encoded
  */
 export function encodeCursor(data: CursorData): string {
   try {
     const json = JSON.stringify(data);
-    return Buffer.from(json, 'utf-8').toString('base64');
+    const body = Buffer.from(json, 'utf-8').toString('base64url');
+    const mac = createHmac('sha256', cursorSigningKey)
+      .update(body)
+      .digest('base64url');
+    return `${body}.${mac}`;
   } catch (error) {
     throw new Error(
       `Failed to encode cursor: ${error instanceof Error ? error.message : 'Unknown error'}`
@@ -164,16 +194,41 @@ export function encodeCursor(data: CursorData): string {
 }
 
 /**
- * Decodes a base64-encoded cursor string into a validated `CursorData` object.
+ * Decodes a signed cursor into a validated `CursorData` object.
  *
- * Throws an error if the cursor is not valid base64, cannot be parsed as JSON, or does not contain required pagination fields.
+ * Verifies the HMAC signature in constant time, parses the body, and
+ * validates structural / range bounds. Throws on any failure.
  *
- * @param cursor - The base64-encoded cursor string to decode
+ * @param cursor - The signed cursor string to decode
  * @returns The decoded and validated cursor data
  */
 export function decodeCursor(cursor: string): CursorData {
   try {
-    const json = Buffer.from(cursor, 'base64').toString('utf-8');
+    if (typeof cursor !== 'string' || !cursor.includes('.')) {
+      throw new Error('Cursor format invalid (missing signature)');
+    }
+    const dotIndex = cursor.lastIndexOf('.');
+    const body = cursor.slice(0, dotIndex);
+    const providedMac = cursor.slice(dotIndex + 1);
+    if (!body || !providedMac) {
+      throw new Error('Cursor format invalid');
+    }
+
+    const expectedMac = createHmac('sha256', cursorSigningKey)
+      .update(body)
+      .digest('base64url');
+
+    const providedBuf = Buffer.from(providedMac);
+    const expectedBuf = Buffer.from(expectedMac);
+
+    if (
+      providedBuf.length !== expectedBuf.length ||
+      !timingSafeEqual(providedBuf, expectedBuf)
+    ) {
+      throw new Error('Cursor signature mismatch');
+    }
+
+    const json = Buffer.from(body, 'base64url').toString('utf-8');
     const data = JSON.parse(json);
 
     // Validate cursor data structure
@@ -181,11 +236,20 @@ export function decodeCursor(cursor: string): CursorData {
       throw new Error('Invalid cursor data structure');
     }
 
-    if (typeof data.offset !== 'number' || data.offset < 0) {
+    if (
+      typeof data.offset !== 'number' ||
+      !Number.isInteger(data.offset) ||
+      data.offset < 0 ||
+      data.offset > CURSOR_MAX_OFFSET
+    ) {
       throw new Error('Invalid cursor offset');
     }
 
-    if (typeof data.page_size !== 'number' || data.page_size < 1) {
+    if (
+      typeof data.page_size !== 'number' ||
+      !Number.isInteger(data.page_size) ||
+      data.page_size < 1
+    ) {
       throw new Error('Invalid cursor page_size');
     }
 

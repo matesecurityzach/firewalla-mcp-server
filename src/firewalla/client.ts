@@ -50,8 +50,24 @@ import {
   normalizeIP,
 } from '../utils/geographic.js';
 import { safeAccess, safeValue } from '../utils/data-normalizer.js';
-import { validateAlarmId } from '../utils/alarm-id-validation.js';
+import {
+  validateAlarmId,
+  validateRuleId,
+  validateTargetListId,
+} from '../utils/alarm-id-validation.js';
 import { normalizeTimestamps } from '../utils/data-validator.js';
+
+/**
+ * Path segments that must never appear in a dotted-path traversal — they
+ * lead to JavaScript's prototype chain and a successful write through any
+ * of these keys would mutate Object.prototype (prototype pollution).
+ * Used by setFieldValue / extractFieldValue. See audit finding H-7.
+ */
+const FORBIDDEN_PATH_KEYS = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
 
 /**
  * Standard API response wrapper for Firewalla MSP endpoints
@@ -1291,7 +1307,8 @@ export class FirewallaClient {
    * Get a specific target list by ID
    */
   async getSpecificTargetList(id: string): Promise<TargetList> {
-    return this.request<TargetList>('GET', `/v2/target-lists/${id}`);
+    const safeId = encodeURIComponent(validateTargetListId(id));
+    return this.request<TargetList>('GET', `/v2/target-lists/${safeId}`);
   }
 
   /**
@@ -1324,9 +1341,10 @@ export class FirewallaClient {
       notes?: string;
     }
   ): Promise<TargetList> {
+    const safeId = encodeURIComponent(validateTargetListId(id));
     return this.request<TargetList>(
       'PATCH',
-      `/v2/target-lists/${id}`,
+      `/v2/target-lists/${safeId}`,
       {},
       updateData
     );
@@ -1338,9 +1356,10 @@ export class FirewallaClient {
   async deleteTargetList(
     id: string
   ): Promise<{ success: boolean; message: string }> {
+    const safeId = encodeURIComponent(validateTargetListId(id));
     return this.request<{ success: boolean; message: string }>(
       'DELETE',
-      `/v2/target-lists/${id}`
+      `/v2/target-lists/${safeId}`
     );
   }
 
@@ -1657,7 +1676,7 @@ export class FirewallaClient {
 
           response = await this.request<any>(
             'GET',
-            `/v2/alarms/${validatedGid}/${validatedAlarmId}`
+            `/v2/alarms/${encodeURIComponent(validatedGid)}/${encodeURIComponent(validatedAlarmId)}`
           );
 
           // If we get here, the request succeeded
@@ -1884,7 +1903,7 @@ export class FirewallaClient {
             status?: string;
           }>(
             'DELETE',
-            `/v2/alarms/${validatedGid}/${validatedAlarmId}`,
+            `/v2/alarms/${encodeURIComponent(validatedGid)}/${encodeURIComponent(validatedAlarmId)}`,
             undefined,
             false
           );
@@ -2695,6 +2714,12 @@ export class FirewallaClient {
    */
   private setFieldValue(obj: any, fieldPath: string, value: any): void {
     const keys = fieldPath.split('.');
+    if (keys.some(k => FORBIDDEN_PATH_KEYS.has(k))) {
+      logger.warn('setFieldValue rejected forbidden path segment', {
+        fieldPath,
+      });
+      return;
+    }
     const lastKey = keys.pop();
     if (!lastKey) {
       return;
@@ -2982,8 +3007,10 @@ export class FirewallaClient {
 
       // Enhanced filter application with validation
       if (options.include_resolved === false) {
+        // Paren-wrap the user query so an `OR` at the end can't escape the
+        // status filter via operator precedence (audit M-1).
         params.query = params.query
-          ? `${params.query} AND status:1`
+          ? `(${params.query}) AND status:1`
           : 'status:1';
       }
 
@@ -3283,8 +3310,10 @@ export class FirewallaClient {
         options.min_hits > 0
       ) {
         const minHits = Math.max(1, Math.floor(options.min_hits));
+        // Paren-wrap the user query so an `OR` at the end can't escape the
+        // hit.count filter via operator precedence (audit M-1).
         params.query = params.query
-          ? `${params.query} AND hit.count:>=${minHits}`
+          ? `(${params.query}) AND hit.count:>=${minHits}`
           : `hit.count:>=${minHits}`;
       }
 
@@ -3620,7 +3649,13 @@ export class FirewallaClient {
             // Handle AND/OR logic in queries
             const andParts = query.split(' and ');
 
-            // Check if this is an AND query
+            // Check if this is an AND query.
+            //
+            // Fail-closed contract: when a qualifier like `mac_vendor:` is
+            // present but the value is empty or unrecognized, the predicate
+            // returns false. Previously this used `includes(value || '')`
+            // which made `mac_vendor:` (empty) match every device — an
+            // inventory-disclosure bypass (audit M-2).
             if (andParts.length > 1) {
               return andParts.every(part => {
                 const trimmedPart = part.trim();
@@ -3630,7 +3665,8 @@ export class FirewallaClient {
                     .split('mac_vendor:')[1]
                     ?.split(' ')[0]
                     ?.toLowerCase();
-                  return macVendor.includes(vendor || '');
+                  if (!vendor) return false;
+                  return macVendor.includes(vendor);
                 }
                 if (trimmedPart.includes('name:')) {
                   const nameSearch = trimmedPart
@@ -3638,7 +3674,8 @@ export class FirewallaClient {
                     ?.split(' ')[0]
                     ?.toLowerCase()
                     .replace(/\*/g, '');
-                  return name.includes(nameSearch || '');
+                  if (!nameSearch) return false;
+                  return name.includes(nameSearch);
                 }
                 if (trimmedPart.includes('online:')) {
                   const onlineValue = trimmedPart
@@ -3651,7 +3688,8 @@ export class FirewallaClient {
                   } else if (onlineValue === 'false') {
                     return !isOnline;
                   }
-                  return true; // Unknown online value, let it pass
+                  // Unknown / empty online value — fail closed.
+                  return false;
                 }
 
                 // Fallback for AND parts: search in all text fields
@@ -3665,13 +3703,15 @@ export class FirewallaClient {
               });
             }
 
-            // Handle single field patterns (original logic)
+            // Handle single field patterns. Same fail-closed contract as
+            // the AND branch above (audit M-2).
             if (query.includes('mac_vendor:')) {
               const vendor = query
                 .split('mac_vendor:')[1]
                 ?.split(' ')[0]
                 ?.toLowerCase();
-              return macVendor.includes(vendor || '');
+              if (!vendor) return false;
+              return macVendor.includes(vendor);
             }
             if (query.includes('name:')) {
               const nameSearch = query
@@ -3679,7 +3719,8 @@ export class FirewallaClient {
                 ?.split(' ')[0]
                 ?.toLowerCase()
                 .replace(/\*/g, '');
-              return name.includes(nameSearch || '');
+              if (!nameSearch) return false;
+              return name.includes(nameSearch);
             }
             if (query.includes('online:')) {
               const onlineValue = query
@@ -3692,7 +3733,8 @@ export class FirewallaClient {
               } else if (onlineValue === 'false') {
                 return !isOnline;
               }
-              // If neither true nor false, fall through to other filters
+              // Unknown / empty online value — fail closed.
+              return false;
             }
 
             // Fallback: search in all text fields
@@ -3889,30 +3931,42 @@ export class FirewallaClient {
       ) {
         const minTargets = Math.max(1, Math.floor(options.min_targets));
         params.query = params.query
-          ? `${params.query} AND targets.length:>=${minTargets}`
+          ? `(${params.query}) AND targets.length:>=${minTargets}`
           : `targets.length:>=${minTargets}`;
       }
 
+      // Whitelist DSL-safe identifier shape: leading alpha, then
+      // [a-zA-Z0-9_-]. Anything containing query metacharacters (':',
+      // '(', ')', ',', 'AND', 'OR', 'NOT', spaces) is rejected before it
+      // can break out of the `category:(…)` grouping (audit H-6).
+      const DSL_SAFE_IDENT = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
       if (options.categories && Array.isArray(options.categories)) {
         const validCategories = options.categories.filter(
-          cat => typeof cat === 'string' && cat.trim()
+          (cat): cat is string =>
+            typeof cat === 'string' && DSL_SAFE_IDENT.test(cat.trim())
         );
         if (validCategories.length > 0) {
-          const categoryFilter = `category:(${validCategories.join(',')})`;
+          const categoryFilter = `category:(${validCategories
+            .map(c => c.trim())
+            .join(',')})`;
           params.query = params.query
-            ? `${params.query} AND ${categoryFilter}`
+            ? `(${params.query}) AND ${categoryFilter}`
             : categoryFilter;
         }
       }
 
       if (options.owners && Array.isArray(options.owners)) {
         const validOwners = options.owners.filter(
-          owner => typeof owner === 'string' && owner.trim()
+          (owner): owner is string =>
+            typeof owner === 'string' && DSL_SAFE_IDENT.test(owner.trim())
         );
         if (validOwners.length > 0) {
-          const ownerFilter = `owner:(${validOwners.join(',')})`;
+          const ownerFilter = `owner:(${validOwners
+            .map(o => o.trim())
+            .join(',')})`;
           params.query = params.query
-            ? `${params.query} AND ${ownerFilter}`
+            ? `(${params.query}) AND ${ownerFilter}`
             : ownerFilter;
         }
       }
@@ -4677,10 +4731,7 @@ export class FirewallaClient {
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Enhanced input validation and sanitization
-      const validatedRuleId = this.sanitizeInput(ruleId);
-      if (!validatedRuleId) {
-        throw new Error('Invalid rule ID provided');
-      }
+      const validatedRuleId = validateRuleId(ruleId);
 
       const validatedDuration = Math.max(1, Math.min(durationMinutes, 1440)); // 1 minute to 24 hours
 
@@ -4695,7 +4746,7 @@ export class FirewallaClient {
         message: string;
       }>(
         'POST',
-        `/v2/rules/${validatedRuleId}/pause`,
+        `/v2/rules/${encodeURIComponent(validatedRuleId)}/pause`,
         {}, // empty query params
         params, // body payload with duration & box
         false
@@ -4734,10 +4785,7 @@ export class FirewallaClient {
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Enhanced input validation and sanitization
-      const validatedRuleId = this.sanitizeInput(ruleId);
-      if (!validatedRuleId) {
-        throw new Error('Invalid rule ID provided');
-      }
+      const validatedRuleId = validateRuleId(ruleId);
 
       // Use documented API endpoint with box parameter (like other operations)
       const params = {
@@ -4749,7 +4797,7 @@ export class FirewallaClient {
         message: string;
       }>(
         'POST',
-        `/v2/rules/${validatedRuleId}/resume`,
+        `/v2/rules/${encodeURIComponent(validatedRuleId)}/resume`,
         {}, // empty query params
         params, // body payload with box
         false
@@ -4807,7 +4855,11 @@ export class FirewallaClient {
       return boxFilter;
     }
 
-    return `${query} ${boxFilter}`;
+    // Paren-wrap the user query before AND-concat. Without the parens, a
+    // query ending with `OR` would parse as `… OR box.id:…`, which
+    // OR-combines the box filter and lets the caller escape per-box scoping
+    // in multi-box MSP accounts. See audit finding H-12.
+    return `(${query}) AND ${boxFilter}`;
   }
 
   /**
@@ -4904,7 +4956,14 @@ export class FirewallaClient {
       });
       return undefined;
     }
-    return fieldPath.split('.').reduce((current, key) => current?.[key], obj);
+    const keys = fieldPath.split('.');
+    if (keys.some(k => FORBIDDEN_PATH_KEYS.has(k))) {
+      logger.warn('extractFieldValue rejected forbidden path segment', {
+        fieldPath,
+      });
+      return undefined;
+    }
+    return keys.reduce((current, key) => current?.[key], obj);
   }
 
   /**

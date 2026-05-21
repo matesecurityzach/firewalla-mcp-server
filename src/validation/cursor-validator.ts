@@ -29,7 +29,10 @@ export interface CursorValidationConfig {
 const DEFAULT_CURSOR_CONFIG: Required<CursorValidationConfig> = {
   maxLength: VALIDATION_CONFIG.CURSOR.maxLength,
   allowedPatterns: [
-    /^[a-zA-Z0-9\-_=+/]+$/, // Base64-like pattern
+    // Signed base64url cursor: <body>.<hmac>. This is the current
+    // format emitted by encodeCursor (see src/utils/pagination.ts).
+    /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+    /^[a-zA-Z0-9\-_=+/]+$/, // Legacy base64-like pattern (kept for backwards-compat decoders)
     /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/, // UUID pattern
     /^[a-zA-Z0-9]{20,}$/, // Generic alphanumeric (min 20 chars)
   ],
