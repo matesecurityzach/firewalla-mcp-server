@@ -50,7 +50,7 @@ TypeScript source for the Firewalla MCP server. Entry point is `server.ts`, whic
 
 ### External
 - `@modelcontextprotocol/sdk` — server, stdio/HTTP transports, request schemas.
-- `axios` + `axios-retry`.
+- `axios`.
 - `zod`, `dotenv`, `geoip-lite`.
 
 <!-- MANUAL: -->

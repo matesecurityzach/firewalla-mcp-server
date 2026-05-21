@@ -10,7 +10,7 @@ The MSP API HTTP client. **Every** outbound call to Firewalla flows through `Fir
 
 | File | Description |
 |------|-------------|
-| `client.ts` | `FirewallaClient`: axios + axios-retry, internal response cache (TTL from `CACHE_TTL`), rate limit throttling, box-scoped routing, geographic enrichment hook. |
+| `client.ts` | `FirewallaClient`: axios with internal response cache (TTL from `CACHE_TTL`), rate limit throttling, box-scoped routing, geographic enrichment hook. Retry policy lives in `src/utils/retry-manager.ts` and is opt-in per call site. |
 
 ## For AI Agents
 
@@ -25,7 +25,7 @@ The MSP API HTTP client. **Every** outbound call to Firewalla flows through `Fir
 
 ### Common Patterns
 - Methods are organized by resource (flows, alarms, devices, rules, target lists, boxes, stats).
-- Retry uses exponential backoff for 429 / 5xx.
+- 429 / 5xx surface as thrown errors with mapped messages (see the response interceptor in `client.ts`); call sites that need retry use `src/utils/retry-manager.ts`.
 
 ## Dependencies
 
@@ -33,6 +33,6 @@ The MSP API HTTP client. **Every** outbound call to Firewalla flows through `Fir
 - `src/config/config.ts`, `src/utils/geographic.ts`, `src/monitoring/logger.ts`.
 
 ### External
-- `axios`, `axios-retry`.
+- `axios`.
 
 <!-- MANUAL: -->

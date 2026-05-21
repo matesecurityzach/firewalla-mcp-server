@@ -26,13 +26,20 @@ jobs:
     
     - name: Install dependencies
       run: npm ci
-    
+
+    # Gate the build on no HIGH/CRITICAL advisories. Moderate and lower
+    # are reported (via `audit` step's normal output) but don't fail CI —
+    # the runtime surface is the priority and most moderates land in dev
+    # tooling.
+    - name: Audit dependencies (high+)
+      run: npm audit --audit-level=high
+
     - name: Lint
       run: npm run lint
-    
+
     - name: Build
       run: npm run build
-    
+
     - name: Core Tests
       run: npm run test:quick
       env:

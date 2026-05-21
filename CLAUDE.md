@@ -28,7 +28,7 @@ The downstream consumer of this server is an **AI security-investigation agent**
 - `src/tools/index.ts` — `setupTools()` registers a single `CallToolRequestSchema` handler that delegates execution to the registry.
 - `src/tools/registry.ts` — `ToolRegistry` instantiates all handler classes in its constructor. Adding a tool means: (1) add a handler class, (2) register it here, (3) add its schema to the `ListToolsRequestSchema` block in `server.ts`.
 - `src/tools/handlers/*.ts` — one file per category (`security`, `network`, `device`, `rules`, `analytics`, `search`, `investigation`, `reports`). Each handler extends the base in `handlers/base.ts` and exposes `name`, `category`, and `execute(args, firewalla)`.
-- `src/firewalla/client.ts` — the single HTTP client wrapper around the MSP API (axios + axios-retry, with internal caching).
+- `src/firewalla/client.ts` — the single HTTP client wrapper around the MSP API (axios, with internal caching).
 - `src/reports/index.ts` — shared report builders consumed by both `src/prompts/` and the `generate_*` tools in `src/tools/handlers/reports.ts`.
 
 ### What's actually registered (37 active tools)
@@ -95,7 +95,11 @@ Optional (see `src/config/config.ts` for the full list and bounds):
 - `DEFAULT_PAGE_SIZE` (default 100), `MAX_PAGE_SIZE` (default 10000)
 - `MCP_TRANSPORT` (`stdio` | `http`, default `stdio`)
 - `MCP_HTTP_PORT` (default 3000), `MCP_HTTP_PATH` (default `/mcp`)
-- `MCP_TEST_MODE=true` — start with dummy credentials (for Docker health checks)
+- `MCP_HTTP_HOST` — bind address for the HTTP listener (default `127.0.0.1`). Default is loopback-only on purpose: broadening this to `0.0.0.0` exposes the MCP token's tool surface to every LAN neighbor. Pair any broader bind with `MCP_HTTP_BEARER`.
+- `MCP_HTTP_ALLOWED_HOSTS` — comma-separated `Host:` header allowlist for DNS-rebinding defense. By default `localhost`/`127.0.0.1` (with and without port) are always accepted; set this to add additional hosts that may legitimately reach the server.
+- `MCP_HTTP_ALLOWED_ORIGINS` — comma-separated `Origin:` header allowlist. When empty, requests bearing any `Origin` header are rejected (CLI MCP clients omit Origin; browsers always send it). Set to specific origins to allow named browser clients.
+- `MCP_HTTP_BEARER` — when set, every HTTP request must carry `Authorization: Bearer <value>` (compared with `timingSafeEqual`).
+- `MCP_TEST_MODE=true` — start with dummy credentials (for Docker health checks). **Refused when `NODE_ENV=production`** to prevent the misconfiguration where prod deployments silently use the dummy `test-token` against `test.firewalla.net`.
 - `MCP_DISABLED_TOOLS` — referenced in error messages; **not currently wired into tool dispatch**. Do not rely on it without adding the check.
 
 ## Common Commands
@@ -162,7 +166,7 @@ npm run ci:full            # ci:quick + test:ci
 ## Caching and Rate Limiting
 
 - `FirewallaClient` caches responses with TTL set by `CACHE_TTL` (default 300s). LRU-style eviction; geographic enrichment uses its own longer-lived cache.
-- `axios-retry` handles transient failures with exponential backoff.
+- The client does **not** wrap axios in `axios-retry`. Transient-failure retry is implemented in `src/utils/retry-manager.ts` and is opt-in per call site; the axios instance itself just has the configured `API_TIMEOUT`.
 - Respect the documented MSP limit (~100 req/min, see `SPEC.md`). The client throttles internally but unbounded fan-out from search aggregations can still trip it.
 
 ## Known Behaviors / Gotchas

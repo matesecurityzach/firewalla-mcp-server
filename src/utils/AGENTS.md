@@ -23,11 +23,11 @@ Cross-cutting helpers used by tools, the client, and validation. Pure functions 
 | `response-standardizer.ts` | Cross-tool response shape coercion. |
 | `query-validator.ts` | Lightweight query-string sanity checks. |
 | `simple-boolean-translator.ts` | Faster path for "field:true/false" expressions. |
-| `alarm-id-validation.ts` | Strict alarm ID format checks. |
+| `alarm-id-validation.ts` | Strict path-segment validators (alarm/rule/target-list IDs, box GIDs) — whitelist `[a-zA-Z0-9_-]`, length-capped, used at every `/v2/{resource}/{id}` interpolation in `client.ts`. |
 | `bulk-operation-manager.ts` | Batching + result aggregation for bulk handlers. |
 | `streaming-manager.ts` | Chunked response orchestration. |
 | `timeout-manager.ts` | Per-call timeout enforcement. |
-| `retry-manager.ts` | Retry policy used outside the axios-retry path. |
+| `retry-manager.ts` | Opt-in retry policy (exponential backoff) — the FirewallaClient axios instance itself does not auto-retry, so callers that need retry wrap their request via this helper. |
 | `platform.ts` | OS/runtime detection helpers. |
 | `simple-utils.ts` | Misc small helpers (object/array). |
 

@@ -1,5 +1,10 @@
 # Multi-stage build for optimal image size
-FROM node:18-alpine AS builder
+# Pinned to a specific Node 18.x LTS minor for reproducibility. For full
+# build determinism, replace this with the immutable digest form
+# `FROM node:18.20-alpine@sha256:<digest>` — captured from the operator's
+# trusted registry pull. The floating `node:18-alpine` tag was flagged by
+# the security audit (L-1) because rebuilds silently picked up new bases.
+FROM node:18.20-alpine AS builder
 
 # Install build dependencies for native modules
 RUN apk add --no-cache python3 make g++
@@ -20,7 +25,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:18-alpine AS production
+FROM node:18.20-alpine AS production
 
 # Install dumb-init for proper signal handling
 RUN apk add --no-cache dumb-init
